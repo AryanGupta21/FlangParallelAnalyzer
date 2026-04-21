@@ -166,7 +166,7 @@ cd tests && bash run_tests.sh
 ## Development Roadmap
 
 - [x] Project design & README
-- [ ] Phase 1 — Skeleton pass: walk `fir.do_loop`, print location
+- [x] Phase 1 — Skeleton pass: walk `fir.do_loop`, print location + bounds
 - [ ] Phase 2 — Variable classifier: read/write/read-write tracking
 - [ ] Phase 3 — Index pattern matcher: detect `a(i)` vs `a(i±k)`
 - [ ] Phase 4 — Reduction detector: scalar accumulation patterns
