@@ -27,16 +27,40 @@ FILTER="${1:-}"   # optional: substring to match test file names
 # ── Pre-flight checks ─────────────────────────────────────────────────────
 
 if [ ! -x "$FPA_TOOL" ]; then
-  echo "ERROR: fpa-tool not found at '$FPA_TOOL'"
-  echo "       Build first: cmake --build ../build"
-  echo "       Or set:      FPA_TOOL=/path/to/fpa-tool"
+  echo ""
+  echo "  ERROR: fpa-tool not found at '$FPA_TOOL'"
+  echo ""
+  echo "  fpa-tool needs to be compiled before tests can run."
+  echo "  It links against LLVM/Flang, which must also be built first."
+  echo ""
+  echo "  Full step-by-step instructions:"
+  echo "    → docs/setup.md"
+  echo ""
+  echo "  Short version:"
+  echo "    1. brew install ninja llvm"
+  echo "    2. git clone --branch llvmorg-18.1.0 --depth 1 \\"
+  echo "         https://github.com/llvm/llvm-project.git"
+  echo "    3. cd llvm-project/build && cmake ../llvm -G Ninja \\"
+  echo "         -DLLVM_ENABLE_PROJECTS='clang;flang;mlir' \\"
+  echo "         -DLLVM_TARGETS_TO_BUILD=AArch64 \\"
+  echo "         -DCMAKE_BUILD_TYPE=RelWithDebInfo"
+  echo "       ninja flang-new mlir-opt FileCheck"
+  echo "    4. cd paraloop && mkdir build && cd build"
+  echo "       cmake .. -DLLVM_BUILD_DIR=~/Developer/llvm-project/build \\"
+  echo "                -DLLVM_SOURCE_DIR=~/Developer/llvm-project"
+  echo "       ninja fpa-tool"
+  echo "    5. FPA_TOOL=build/bin/fpa-tool bash tests/run_lit.sh"
+  echo ""
   exit 1
 fi
 
 if ! command -v "$FILECHECK" &>/dev/null; then
-  echo "ERROR: FileCheck not found."
-  echo "       It ships with LLVM: /path/to/llvm-project/build/bin/FileCheck"
-  echo "       Set: FILECHECK=/path/to/FileCheck"
+  echo ""
+  echo "  ERROR: FileCheck not found."
+  echo ""
+  echo "  FileCheck ships with LLVM. After building LLVM (see docs/setup.md):"
+  echo "    export FILECHECK=~/Developer/llvm-project/build/bin/FileCheck"
+  echo ""
   exit 1
 fi
 
