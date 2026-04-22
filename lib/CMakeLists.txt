@@ -5,6 +5,7 @@ set(LLVM_LINK_COMPONENTS
 
 add_mlir_library(FPALoopAnalysis
   LoopParallelAnalysis.cpp
+  AccessClassifier.cpp
 
   LINK_LIBS PUBLIC
     # MLIR core

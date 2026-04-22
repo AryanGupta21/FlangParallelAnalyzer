@@ -167,7 +167,7 @@ cd tests && bash run_tests.sh
 
 - [x] Project design & README
 - [x] Phase 1 — Skeleton pass: walk `fir.do_loop`, print location + bounds
-- [ ] Phase 2 — Variable classifier: read/write/read-write tracking
+- [x] Phase 2 — Variable classifier: read/write/read-write tracking + LIT test suite
 - [ ] Phase 3 — Index pattern matcher: detect `a(i)` vs `a(i±k)`
 - [ ] Phase 4 — Reduction detector: scalar accumulation patterns
 - [ ] Phase 5 — Hint emitter + JSON output

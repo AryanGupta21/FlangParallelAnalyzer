@@ -1,17 +1,19 @@
 // LoopParallelAnalysis.cpp
 //
-// Phase 1 — skeleton pass.
+// The main MLIR pass.  Each phase adds analysis on top of the previous one.
 //
-// Walks every fir.do_loop inside a func::FuncOp, collects basic loop
-// metadata (location, constant bounds), and emits a placeholder hint.
-// Phases 2-4 will fill in dependency / reduction analysis; Phase 5
-// will replace the placeholder output with real OMP directives.
+//  Phase 1 — structural metadata (loop bounds, nesting depth, op count)
+//  Phase 2 — access classification (which refs are read / written / external)
+//  Phase 3 — index pattern matching       [stub: wired in, not yet filled]
+//  Phase 4 — reduction detection          [stub: wired in, not yet filled]
+//  Phase 5 — final hint emission          [stub: wired in, not yet filled]
 
 #include "FlangParallelAnalyzer/LoopParallelAnalysis.h"
+#include "FlangParallelAnalyzer/AccessClassifier.h"
 
-#include "flang/Optimizer/Dialect/FIROps.h"        // fir::DoLoopOp
-#include "mlir/Dialect/Arith/IR/Arith.h"           // arith::ConstantIndexOp
-#include "mlir/Dialect/Func/IR/FuncOps.h"          // func::FuncOp
+#include "flang/Optimizer/Dialect/FIROps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Visitors.h"
@@ -22,49 +24,170 @@ using namespace mlir;
 
 namespace fpa {
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Utilities ────────────────────────────────────────────────────────────────
 
-// Returns the integer value of a constant index Value, or std::nullopt.
 static std::optional<int64_t> getConstantIndex(Value v) {
-  if (!v)
-    return std::nullopt;
-  if (auto cst = v.getDefiningOp<arith::ConstantIndexOp>())
-    return cst.value();
-  // Also handle arith.constant with IntegerAttr
-  if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
-    if (auto intAttr = cst.getValue().dyn_cast<IntegerAttr>())
-      return intAttr.getInt();
-  }
+  if (!v) return std::nullopt;
+  if (auto c = v.getDefiningOp<arith::ConstantIndexOp>())
+    return c.value();
+  if (auto c = v.getDefiningOp<arith::ConstantOp>())
+    if (auto ia = c.getValue().dyn_cast<IntegerAttr>())
+      return ia.getInt();
   return std::nullopt;
 }
 
-// Pretty-prints a Location as "file:line" when possible, otherwise "<unknown>".
 static std::string locationString(Location loc) {
   std::string buf;
   llvm::raw_string_ostream os(buf);
-
-  if (auto fileLoc = loc.dyn_cast<FileLineColLoc>()) {
-    os << fileLoc.getFilename().str() << ":" << fileLoc.getLine();
-  } else if (auto namedLoc = loc.dyn_cast<NameLoc>()) {
-    os << namedLoc.getName().str();
-  } else {
+  if (auto fl = loc.dyn_cast<FileLineColLoc>())
+    os << fl.getFilename().str() << ":" << fl.getLine();
+  else if (auto nl = loc.dyn_cast<NameLoc>())
+    os << nl.getName().str();
+  else
     os << "<unknown>";
-  }
   return os.str();
 }
 
-// Counts direct fir.do_loop children (non-recursive) — used to detect
-// the outermost loop of a nest.
-static unsigned countDirectChildLoops(fir::DoLoopOp loop) {
-  unsigned count = 0;
-  for (Operation &op : loop.getBody()->getOperations()) {
-    if (isa<fir::DoLoopOp>(op))
-      ++count;
+static StringRef safetyLabel(LoopSafety s) {
+  switch (s) {
+  case LoopSafety::Safe:      return "SAFE";
+  case LoopSafety::Reduction: return "REDUCTION";
+  case LoopSafety::Unsafe:    return "UNSAFE";
+  case LoopSafety::Unknown:   return "UNKNOWN";
   }
-  return count;
+  return "UNKNOWN";
 }
 
-// ── Pass ────────────────────────────────────────────────────────────────────
+// ── Phase 1 — structural metadata ────────────────────────────────────────────
+
+static LoopInfo collectPhase1(fir::DoLoopOp loop) {
+  LoopInfo info;
+  info.loc        = loop.getLoc();
+  info.lowerBound = getConstantIndex(loop.getLowerBound());
+  info.upperBound = getConstantIndex(loop.getUpperBound());
+  info.step       = getConstantIndex(loop.getStep());
+
+  // Nesting depth: count ancestor fir.do_loop ops.
+  Operation *parent = loop->getParentOp();
+  while (parent) {
+    if (isa<fir::DoLoopOp>(parent))
+      ++info.nestDepth;
+    parent = parent->getParentOp();
+  }
+
+  // Direct child loops.
+  for (Operation &op : loop.getBody()->getOperations())
+    if (isa<fir::DoLoopOp>(op))
+      ++info.innerLoops;
+
+  // Body op count (rough complexity proxy).
+  loop.getBody()->walk([&](Operation *) { ++info.bodyOpCount; });
+
+  info.safety = LoopSafety::Unknown;
+  info.hint   = "!$OMP PARALLEL DO  ! (analysis in progress)";
+  info.reason = "Phase 1 only";
+  return info;
+}
+
+// ── Phase 2 — access classification ──────────────────────────────────────────
+
+static void runPhase2(LoopInfo &info, fir::DoLoopOp loop) {
+  info.accessRecords = AccessClassifier::classify(loop);
+  AccessSummary s    = AccessClassifier::summarize(info.accessRecords);
+  info.accessSummary = s;
+
+  // Update hint and reason based on what we now know.
+  // We still cannot call a loop Safe (that needs Phase 3 index analysis),
+  // but we can flag it as Unsafe when external writes exist without
+  // any possible justification.
+
+  if (s.allExternalRefsReadOnly()) {
+    // Nothing is written to external memory → trivially parallel
+    // (Phase 3 will confirm; stay UNKNOWN to be safe until then).
+    info.hint   = "!$OMP PARALLEL DO  ! (read-only externals — confirming in Phase 3)";
+    info.reason = "All external refs are read-only; no write dependencies possible.";
+  } else if (s.externalReadWrites > 0 && s.externalWrites == 0) {
+    // External refs are both read and written — could be a reduction.
+    // Phase 4 will check the pattern more carefully.
+    info.hint   = "!$OMP PARALLEL DO REDUCTION(...)  ! (candidate — confirming in Phase 4)";
+    info.reason = "External read-write ref(s) detected; possible reduction pattern.";
+  } else if (s.externalWrites > 0) {
+    // Something is written to an external ref. Without index analysis
+    // we cannot rule out a loop-carried dependency.
+    info.hint   = "!$OMP PARALLEL DO  ! (external write — index check pending Phase 3)";
+    info.reason = "External write detected; awaiting index-pattern check.";
+  }
+}
+
+// ── Phase 3 stub ─────────────────────────────────────────────────────────────
+// Will detect a(i-1) / a(i+1) style accesses.
+
+static void runPhase3(LoopInfo & /*info*/, fir::DoLoopOp /*loop*/) {
+  // TODO(Phase 3): walk fir.coordinate_of indices and check for IV offsets.
+}
+
+// ── Phase 4 stub ─────────────────────────────────────────────────────────────
+// Will match  load → binary-op → store-same-ref  reduction patterns.
+
+static void runPhase4(LoopInfo & /*info*/, fir::DoLoopOp /*loop*/) {
+  // TODO(Phase 4): detect scalar accumulation.
+}
+
+// ── Phase 5 stub ─────────────────────────────────────────────────────────────
+// Will produce the final, authoritative OMP directive string + JSON output.
+
+static void runPhase5(LoopInfo & /*info*/) {
+  // TODO(Phase 5): replace placeholder hints with definitive directives.
+}
+
+// ── Printer ──────────────────────────────────────────────────────────────────
+
+static void printLoopInfo(const LoopInfo &info, unsigned idx) {
+  llvm::outs() << "\n  Loop #" << idx
+               << " @ " << locationString(info.loc) << "\n";
+
+  // ── Bounds ──
+  llvm::outs() << "  Bounds : [";
+  if (info.lowerBound) llvm::outs() << *info.lowerBound; else llvm::outs() << "?";
+  llvm::outs() << " .. ";
+  if (info.upperBound) llvm::outs() << *info.upperBound; else llvm::outs() << "?";
+  llvm::outs() << " step ";
+  if (info.step)       llvm::outs() << *info.step;       else llvm::outs() << "?";
+  llvm::outs() << "]";
+  if (info.nestDepth > 0)
+    llvm::outs() << "  depth=" << info.nestDepth;
+  llvm::outs() << "\n";
+
+  // ── Phase 2: access summary ──
+  if (info.accessSummary) {
+    const AccessSummary &s = *info.accessSummary;
+    llvm::outs() << "  Access : "
+                 << "ext-reads="      << s.externalReads      << "  "
+                 << "ext-writes="     << s.externalWrites      << "  "
+                 << "ext-readwrites=" << s.externalReadWrites  << "  "
+                 << "local-writes="   << s.localWrites         << "\n";
+
+    // Per-ref detail (one line each, indented)
+    for (const AccessRecord &rec : info.accessRecords) {
+      if (!rec.isExternalToLoop) continue; // skip loop-local refs
+      llvm::outs() << "           [" << rec.rwLabel() << "] "
+                   << (rec.isArrayRef ? "array" : "scalar")
+                   << " — ";
+      // Print the Value's brief representation
+      std::string valStr;
+      llvm::raw_string_ostream vs(valStr);
+      rec.baseRef.printAsOperand(vs, /*printType=*/false);
+      llvm::outs() << vs.str() << "\n";
+    }
+  }
+
+  // ── Hint & verdict ──
+  llvm::outs() << "  Status : " << safetyLabel(info.safety) << "\n";
+  llvm::outs() << "  Hint   : " << info.hint   << "\n";
+  llvm::outs() << "  Reason : " << info.reason << "\n";
+}
+
+// ── Pass ─────────────────────────────────────────────────────────────────────
 
 namespace {
 
@@ -82,103 +205,35 @@ struct LoopParallelAnalysisPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     llvm::outs() << "\n[FlangParallelAnalyzer] Function: "
-                 << func.getName() << "\n";
-    llvm::outs() << std::string(60, '-') << "\n";
+                 << func.getName() << "\n"
+                 << std::string(60, '-') << "\n";
 
-    unsigned loopCount = 0;
+    unsigned idx = 0;
 
-    // Walk in pre-order so outer loops are visited before inner ones.
     func.walk<WalkOrder::PreOrder>([&](fir::DoLoopOp loop) {
-      ++loopCount;
-      LoopInfo info = collectLoopInfo(loop);
-      printLoopInfo(info, loopCount);
+      ++idx;
+
+      // Run each phase in order.  Later phases overwrite/extend the
+      // fields set by earlier ones.
+      LoopInfo info = collectPhase1(loop);
+      runPhase2(info, loop);
+      runPhase3(info, loop);  // stub
+      runPhase4(info, loop);  // stub
+      runPhase5(info);        // stub
+
+      printLoopInfo(info, idx);
     });
 
-    if (loopCount == 0)
+    if (idx == 0)
       llvm::outs() << "  (no DO loops found)\n";
 
     llvm::outs() << std::string(60, '-') << "\n\n";
-  }
-
-private:
-  // ── Phase 1: collect basic structural metadata ─────────────────────────
-
-  LoopInfo collectLoopInfo(fir::DoLoopOp loop) {
-    LoopInfo info;
-    info.loc = loop.getLoc();
-
-    // ── Bounds ──────────────────────────────────────────────────────────
-    // Store as strings for display; Phases 2-3 will use the Values directly.
-    std::optional<int64_t> lb   = getConstantIndex(loop.getLowerBound());
-    std::optional<int64_t> ub   = getConstantIndex(loop.getUpperBound());
-    std::optional<int64_t> step = getConstantIndex(loop.getStep());
-
-    // ── Nesting depth ───────────────────────────────────────────────────
-    unsigned nestDepth = 0;
-    Operation *parent  = loop->getParentOp();
-    while (parent) {
-      if (isa<fir::DoLoopOp>(parent))
-        ++nestDepth;
-      parent = parent->getParentOp();
-    }
-
-    unsigned innerLoops = countDirectChildLoops(loop);
-
-    // ── Body op count (rough complexity proxy) ──────────────────────────
-    unsigned bodyOps = 0;
-    loop.getBody()->walk([&](Operation *) { ++bodyOps; });
-
-    // ── Build reason string ──────────────────────────────────────────────
-    std::string reasonBuf;
-    llvm::raw_string_ostream rs(reasonBuf);
-
-    rs << "Phase 1 (skeleton) — bounds: [";
-    if (lb)   rs << *lb;   else rs << "?";
-    rs << " .. ";
-    if (ub)   rs << *ub;   else rs << "?";
-    rs << " step ";
-    if (step) rs << *step; else rs << "?";
-    rs << "]";
-
-    if (nestDepth > 0)
-      rs << ", nest depth: " << nestDepth;
-    if (innerLoops > 0)
-      rs << ", direct inner loops: " << innerLoops;
-    rs << ", body ops: " << bodyOps;
-
-    // Placeholder safety — Phases 2-4 will compute this properly.
-    info.safety = LoopSafety::Unknown;
-    info.hint   = "!$OMP PARALLEL DO  ! (unverified — analysis pending)";
-    info.reason = rs.str();
-
-    return info;
-  }
-
-  // ── Printer ─────────────────────────────────────────────────────────────
-
-  void printLoopInfo(const LoopInfo &info, unsigned idx) {
-    llvm::outs() << "\n  Loop #" << idx
-                 << " @ " << locationString(info.loc) << "\n";
-
-    llvm::outs() << "  Hint   : " << info.hint   << "\n";
-    llvm::outs() << "  Status : " << safetyLabel(info.safety) << "\n";
-    llvm::outs() << "  Detail : " << info.reason << "\n";
-  }
-
-  static StringRef safetyLabel(LoopSafety s) {
-    switch (s) {
-    case LoopSafety::Safe:      return "SAFE";
-    case LoopSafety::Reduction: return "REDUCTION";
-    case LoopSafety::Unsafe:    return "UNSAFE";
-    case LoopSafety::Unknown:   return "UNKNOWN (Phase 1 — full analysis pending)";
-    }
-    return "UNKNOWN";
   }
 };
 
 } // namespace
 
-// ── Pass registration ────────────────────────────────────────────────────────
+// ── Registration ─────────────────────────────────────────────────────────────
 
 std::unique_ptr<mlir::Pass> createLoopParallelAnalysisPass() {
   return std::make_unique<LoopParallelAnalysisPass>();

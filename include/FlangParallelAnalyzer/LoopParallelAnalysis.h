@@ -1,8 +1,10 @@
 #ifndef FLANG_PARALLEL_ANALYZER_LOOP_PARALLEL_ANALYSIS_H
 #define FLANG_PARALLEL_ANALYZER_LOOP_PARALLEL_ANALYSIS_H
 
+#include "FlangParallelAnalyzer/AccessClassifier.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
+#include <optional>
 
 namespace mlir {
 class Pass;
@@ -10,41 +12,56 @@ class Pass;
 
 namespace fpa {
 
-// ── Result types ────────────────────────────────────────────────────────────
+// ── Safety verdict ───────────────────────────────────────────────────────────
 
-// Safety verdict for a single loop.
 enum class LoopSafety {
-  Safe,       // no dependencies found — emit OMP PARALLEL DO
-  Reduction,  // scalar accumulation — emit OMP PARALLEL DO REDUCTION
-  Unsafe,     // loop-carried dep or unknown side-effect
-  Unknown,    // analysis could not determine (conservative → Unsafe)
+  Safe,       // no dependencies found         → !$OMP PARALLEL DO
+  Reduction,  // scalar accumulation pattern   → !$OMP PARALLEL DO REDUCTION
+  Unsafe,     // loop-carried dep / side-effect
+  Unknown,    // analysis incomplete (conservative → treat as Unsafe)
 };
 
-// Everything the analyzer knows about one loop after Phase 1.
-// Phases 2-4 will add fields here.
+// ── LoopInfo — the single source of truth for one loop ───────────────────────
+//
+// Each phase fills in its own section.  The hint emitter (Phase 5) reads the
+// final state and produces the OMP directive string.
+
 struct LoopInfo {
   mlir::Location loc;
   LoopSafety     safety = LoopSafety::Unknown;
-  std::string    hint;         // suggested OMP directive string
-  std::string    reason;       // human-readable justification
+  std::string    hint;    // e.g. "!$OMP PARALLEL DO"
+  std::string    reason;  // human-readable explanation shown in output
 
-  // ── Phase 2 fields (AccessClassifier) ─────────────────────────────
-  // bool hasExternalScalarWrite = false;
-  // bool allArrayWritesUseExactIV = false;
+  // ── Phase 1 fields ──────────────────────────────────────────────────
+  std::optional<int64_t> lowerBound;
+  std::optional<int64_t> upperBound;
+  std::optional<int64_t> step;
+  unsigned nestDepth   = 0; // 0 = outermost
+  unsigned innerLoops  = 0; // direct child fir.do_loop count
+  unsigned bodyOpCount = 0; // total ops inside body (complexity proxy)
 
-  // ── Phase 3 fields (IndexPatternMatcher) ──────────────────────────
-  // bool hasOffsetAccess = false;   // a(i-1) or a(i+1)
+  // ── Phase 2 fields ──────────────────────────────────────────────────
+  // Set by AccessClassifier after walking loads/stores in the loop body.
+  std::optional<AccessSummary> accessSummary;
 
-  // ── Phase 4 fields (ReductionDetector) ────────────────────────────
+  // The full per-ref records (used by Phase 3 + 4 for deeper analysis).
+  llvm::SmallVector<AccessRecord> accessRecords;
+
+  // ── Phase 3 fields (IndexPatternMatcher) ────────────────────────────
+  // bool hasOffsetIndex = false;  // a(i±k) detected
+
+  // ── Phase 4 fields (ReductionDetector) ──────────────────────────────
   // std::string reductionVar;
-  // std::string reductionOp;        // "+", "*", "max", "min"
+  // std::string reductionOp;   // "+", "*", "max", "min"
 };
 
-// ── Pass factory ────────────────────────────────────────────────────────────
+// ── Pass factory ─────────────────────────────────────────────────────────────
 
-// Creates the analysis pass.  Register it with the MLIR pass manager as
-// "--fir-loop-parallel-analysis".
 std::unique_ptr<mlir::Pass> createLoopParallelAnalysisPass();
+
+// Called once at startup to register "--fir-loop-parallel-analysis" with
+// the MLIR pass registry (needed by fpa-tool's main.cpp).
+void registerLoopParallelAnalysisPass();
 
 } // namespace fpa
 
