@@ -1,17 +1,10 @@
-set(LLVM_LINK_COMPONENTS
-  Support
-  Core
-)
-
-add_llvm_executable(fpa-tool
-  main.cpp
-)
+add_executable(fpa-tool main.cpp)
 
 target_link_libraries(fpa-tool PRIVATE
   # Our analysis library
   FPALoopAnalysis
 
-  # mlir-opt infrastructure (MlirOptMain, pass manager, etc.)
+  # mlir-opt infrastructure
   MLIROptLib
   MLIRPass
   MLIRSupport
@@ -20,11 +13,11 @@ target_link_libraries(fpa-tool PRIVATE
   MLIRFuncDialect
   MLIRArithDialect
 
-  # FIR
+  # FIR dialect (apt: .a files via link_directories; source: cmake targets)
   FIRDialect
-  FIRSupport
+  FIRDialectSupport
   FIRBuilder
+  FIRSupport
 )
 
-# Tell CMake to install the tool alongside other LLVM tools (optional)
 install(TARGETS fpa-tool DESTINATION bin)
