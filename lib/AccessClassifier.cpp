@@ -113,8 +113,9 @@ AccessClassifier::classify(fir::DoLoopOp loop) {
     if (auto arrLoad = dyn_cast<fir::ArrayLoadOp>(op))
       record(arrLoad.getMemref(), /*read=*/true, /*write=*/false);
 
-    // fir.array_store: stores a modified array value back (HLFIR-style).
-    if (auto arrStore = dyn_cast<fir::ArrayStoreOp>(op))
+    // fir.array_merge_store: stores a modified array value back (HLFIR-style).
+    // Note: named ArrayMergeStoreOp in FIR 18 (ArrayStoreOp does not exist).
+    if (auto arrStore = dyn_cast<fir::ArrayMergeStoreOp>(op))
       record(arrStore.getMemref(), /*read=*/false, /*write=*/true);
   });
 

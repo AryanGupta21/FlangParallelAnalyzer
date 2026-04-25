@@ -36,7 +36,10 @@ static std::optional<int64_t> getConstantIndex(Value v) {
   return std::nullopt;
 }
 
-static std::string locationString(Location loc) {
+static std::string locationString(std::optional<mlir::Location> locOpt) {
+  if (!locOpt)
+    return "<unknown>";
+  mlir::Location loc = *locOpt;
   std::string buf;
   llvm::raw_string_ostream os(buf);
   if (auto fl = loc.dyn_cast<FileLineColLoc>())
@@ -62,7 +65,7 @@ static StringRef safetyLabel(LoopSafety s) {
 
 static LoopInfo collectPhase1(fir::DoLoopOp loop) {
   LoopInfo info;
-  info.loc        = loop.getLoc();
+  info.loc        = std::optional<mlir::Location>(loop.getLoc());
   info.lowerBound = getConstantIndex(loop.getLowerBound());
   info.upperBound = getConstantIndex(loop.getUpperBound());
   info.step       = getConstantIndex(loop.getStep());
@@ -176,7 +179,8 @@ static void printLoopInfo(const LoopInfo &info, unsigned idx) {
       // Print the Value's brief representation
       std::string valStr;
       llvm::raw_string_ostream vs(valStr);
-      rec.baseRef.printAsOperand(vs, /*printType=*/false);
+      // printAsOperand(stream, bool) removed in LLVM 18 — use OpPrintingFlags
+      rec.baseRef.printAsOperand(vs, mlir::OpPrintingFlags{});
       llvm::outs() << vs.str() << "\n";
     }
   }

@@ -27,7 +27,8 @@ enum class LoopSafety {
 // final state and produces the OMP directive string.
 
 struct LoopInfo {
-  mlir::Location loc;
+  // std::optional because mlir::Location has no default constructor
+  std::optional<mlir::Location> loc;
   LoopSafety     safety = LoopSafety::Unknown;
   std::string    hint;    // e.g. "!$OMP PARALLEL DO"
   std::string    reason;  // human-readable explanation shown in output
