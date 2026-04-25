@@ -1,19 +1,23 @@
+# Lightweight driver — no MLIROptLib so no clang-cpp transitive dependency
+
 add_executable(fpa-tool main.cpp)
 
 target_link_libraries(fpa-tool PRIVATE
-  # Our analysis library
   FPALoopAnalysis
 
-  # mlir-opt infrastructure
-  MLIROptLib
+  # Pass manager + core IR
   MLIRPass
   MLIRSupport
   MLIRParser
   MLIRIR
+  MLIRAsmParser
+  MLIRBytecodeReader
+
+  # Dialects we register
   MLIRFuncDialect
   MLIRArithDialect
 
-  # FIR dialect (apt: .a files via link_directories; source: cmake targets)
+  # FIR (linked as .a files via link_directories in root CMakeLists)
   FIRDialect
   FIRDialectSupport
   FIRBuilder
