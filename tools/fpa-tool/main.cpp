@@ -12,6 +12,7 @@
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -42,8 +43,9 @@ int main(int argc, char **argv) {
   context.loadAllAvailableDialects();
 
   // ── Parse input FIR file ───────────────────────────────────────────────────
+  mlir::ParserConfig config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceFile<mlir::ModuleOp>(argv[1], &context);
+      mlir::parseSourceFile<mlir::ModuleOp>(argv[1], config);
 
   if (!module) {
     llvm::errs() << "fpa-tool: failed to parse '" << argv[1] << "'\n";
