@@ -83,14 +83,16 @@ public:
   static AccessSummary
   summarize(llvm::ArrayRef<AccessRecord> records);
 
-private:
-  // Trace val back through any fir.coordinate_of chain to the root ref.
+  // ── Helpers also used by Phase 3 (public so LoopParallelAnalysis can call them)
+
+  // Trace val back through fir.coordinate_of / fir.array_coor / fir.declare
+  // chains to the root memory reference.
   static mlir::Value getBaseRef(mlir::Value val);
 
   // True if val's defining op is NOT inside the loop (or is a block arg).
   static bool isExternalToLoop(mlir::Value val, fir::DoLoopOp loop);
 
-  // True if val's type is fir.ref<!fir.array<...>>.
+  // True if val's type is fir.ref<!fir.array<...>> or fir.box<!fir.array<...>>.
   static bool isArrayType(mlir::Value val);
 };
 

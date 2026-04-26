@@ -7,6 +7,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Default to Release so MLIR/Clang IMPORTED targets get a valid IMPORTED_LOCATION.
+# Without this, cmake can't resolve the clang-cpp shared library path and falls
+# back to -lclang-cpp which the linker can't find on apt-installed LLVM.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+endif()
+
 # ── Required path ────────────────────────────────────────────────────────────
 # Apt install (Codespaces):  -DLLVM_BUILD_DIR=/usr/lib/llvm-18
 # Source build:              -DLLVM_BUILD_DIR=/path/to/llvm-project/build

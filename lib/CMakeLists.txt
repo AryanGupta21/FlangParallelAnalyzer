@@ -22,13 +22,11 @@ target_link_libraries(FPALoopAnalysis PUBLIC
   # MLIR — proper cmake targets exported by find_package(MLIR)
   MLIRPass
   MLIRSupport
-  MLIRTransformUtils
   MLIRFuncDialect
   MLIRArithDialect
 
   # FIR — .a files found via link_directories() set in root CMakeLists.txt
   FIRDialect
   FIRDialectSupport
-  FIRBuilder
   FIRSupport
 )

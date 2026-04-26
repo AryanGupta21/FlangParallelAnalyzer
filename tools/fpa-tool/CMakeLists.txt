@@ -20,7 +20,6 @@ target_link_libraries(fpa-tool PRIVATE
   # FIR (linked as .a files via link_directories in root CMakeLists)
   FIRDialect
   FIRDialectSupport
-  FIRBuilder
   FIRSupport
 )
 

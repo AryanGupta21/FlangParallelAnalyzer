@@ -39,17 +39,27 @@ namespace fpa {
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
-// Walk up a chain of fir.coordinate_of ops to find the root memory ref.
+// Walk up the FIR reference chain to find the root memory ref.
 //
-// Example:
-//   %root  = ... : !fir.ref<!fir.array<?xf32>>
-//   %elem1 = fir.coordinate_of %root, %i   → base = %root
-//   %elem2 = fir.coordinate_of %elem1, %j  → base = %root  (multi-dim)
+// Flang lowers array accesses differently depending on the context:
 //
-// If val is not produced by fir.coordinate_of it is returned as-is.
+//   fir.coordinate_of  — used for derived types / explicit subscripts
+//   fir.array_coor     — used for Fortran array element access (most common)
+//   fir.declare        — wraps every variable at function entry to attach
+//                        metadata; the underlying ref is operand 0.
+//
+// We must strip all three layers to reach the base fir.ref / block arg.
 Value AccessClassifier::getBaseRef(Value val) {
-  while (auto coord = val.getDefiningOp<fir::CoordinateOp>())
-    val = coord.getRef();
+  while (true) {
+    if (auto coord = val.getDefiningOp<fir::CoordinateOp>())
+      val = coord.getRef();
+    else if (auto ac = val.getDefiningOp<fir::ArrayCoorOp>())
+      val = ac.getMemref();
+    else if (auto decl = val.getDefiningOp<fir::DeclareOp>())
+      val = decl.getMemref();
+    else
+      break;
+  }
   return val;
 }
 
@@ -64,12 +74,20 @@ bool AccessClassifier::isExternalToLoop(Value val, fir::DoLoopOp loop) {
   return !loop->isAncestor(defOp);
 }
 
-// True when val's type is fir.ref<!fir.array<...>>.
+// True when val's type is fir.ref<!fir.array<...>> or fir.box<!fir.array<...>>.
+//
+// Flang uses two representations:
+//   !fir.ref<!fir.array<?xf32>>   — explicit-shape / value dummy
+//   !fir.box<!fir.array<?xf32>>   — assumed-shape dummy (Fortran (:) notation)
 bool AccessClassifier::isArrayType(Value val) {
-  auto refTy = val.getType().dyn_cast<fir::ReferenceType>();
-  if (!refTy)
+  mlir::Type inner;
+  if (auto refTy = val.getType().dyn_cast<fir::ReferenceType>())
+    inner = refTy.getEleTy();
+  else if (auto boxTy = val.getType().dyn_cast<fir::BoxType>())
+    inner = boxTy.getEleTy();
+  else
     return false;
-  return refTy.getEleTy().isa<fir::SequenceType>();
+  return inner.isa<fir::SequenceType>();
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────

@@ -43,6 +43,9 @@ int main(int argc, char **argv) {
   context.loadAllAvailableDialects();
 
   // ── Parse input FIR file ───────────────────────────────────────────────────
+  // flang emits #dlti attributes and !llvm.ptr types that we don't analyse.
+  // Allow unregistered dialects so the parser doesn't reject them.
+  context.allowUnregisteredDialects(true);
   mlir::ParserConfig config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceFile<mlir::ModuleOp>(argv[1], config);
