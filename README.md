@@ -1,63 +1,78 @@
 # FlangParallelAnalyzer
 
-A Loop Parallelization Hint Detector for Fortran programs, built as an MLIR analysis pass on top of the [Flang](https://flang.llvm.org/) (LLVM) compiler infrastructure.
+An MLIR analysis pass for the [Flang](https://flang.llvm.org/) Fortran compiler that detects parallelizable DO loops and emits OpenMP directives.
 
-The tool analyzes Fortran DO loops at the **FIR (Fortran Intermediate Representation)** level and emits parallelization hints such as OpenMP directives.
+The tool works at the **FIR (Fortran Intermediate Representation)** level — the same IR that Flang produces before lowering to LLVM IR — giving it access to array shapes, loop structure, and variable intent annotations.
+
+---
+
+## Sample Output
 
 ```
-! input: heat.f90
-do i = 1, n
-  b(i) = a(i) * 2.0
-end do
+$ fpa-tool trivial_parallel.fir
 
-! output
-[ParallelAnalyzer] heat.f90:3 — !$OMP PARALLEL DO
-  Reason: no loop-carried dependencies detected — safe to parallelize
+[FlangParallelAnalyzer] Function: _QPscale
+------------------------------------------------------------
+
+  Loop #1 @ trivial_parallel.fir:30
+  Bounds : [? .. ? step 1]
+  Access : ext-reads=1  ext-writes=1  ext-readwrites=1  local-writes=0
+           [R] array — %arg0
+           [W] array — %arg1
+           [RW] scalar — %1
+  Status : SAFE
+  Hint   : !$OMP PARALLEL DO
+  Reason : Independent per-element access: each iteration reads a(i) and
+           writes b(i) with no overlap across iterations.
+
+------------------------------------------------------------
+```
+
+```
+$ fpa-tool loop_carried_dep.fir
+
+  Loop #1 @ loop_carried_dep.fir:22
+  Status : UNSAFE
+  Hint   : ! Cannot parallelize
+  Reason : Loop-carried dependency: array accessed at i±k offset.
+           Iteration i reads data written by a neighbouring iteration.
+```
+
+```
+$ fpa-tool reduction.fir
+
+  Loop #1 @ reduction.fir:32
+  Status : REDUCTION
+  Hint   : !$OMP PARALLEL DO REDUCTION(+:%arg3)
+  Reason : Scalar accumulation: load → + → store on the same reference.
+           Safe to parallelize with the REDUCTION clause.
 ```
 
 ---
 
-## Goals
+## How It Works — Five Phases
 
-- Detect parallelizable loops using **heuristic-based analysis** (no full polyhedral theory)
-- Emit actionable OpenMP hints: `!$OMP PARALLEL DO`, `!$OMP SIMD`, `REDUCTION`
-- Operate as a reusable MLIR pass inside the Flang pipeline
-- Keep scope practical: student/research project, incrementally built
-
----
-
-## Architecture
-
-```
-Fortran source
-     │  flang-new -fc1 -emit-fir
-     ▼
-  FIR (fir dialect / MLIR)
-     │
-     ▼  ← THIS PROJECT
-┌────────────────────────────────────────┐
-│           FlangParallelAnalyzer        │
-│                                        │
-│  LoopDetector → AccessClassifier       │
-│       → ReductionDetector              │
-│       → DependencyChecker             │
-│       → HintEmitter                   │
-└────────────────────────────────────────┘
-     │
-     ▼
-  Hints (stdout / JSON / annotated source)
-```
-
-### Key Heuristics
-
-| Condition | Hint |
+| Phase | What it does |
 |---|---|
-| No writes inside loop body | `!$OMP PARALLEL DO` |
-| All writes use exact induction var `a(i)` | `!$OMP PARALLEL DO` |
-| Scalar accumulation `sum = sum + expr` | `!$OMP PARALLEL DO REDUCTION(+:sum)` |
-| Index offset `a(i-1)` or `a(i+1)` | **UNSAFE** — loop-carried dependency |
-| Any function call (non-pure) | **UNSAFE** — conservative |
-| Nested independent loops | `!$OMP PARALLEL DO COLLAPSE(2)` |
+| **1 — Structure** | Extracts loop bounds, nesting depth, body op count from `fir.do_loop` |
+| **2 — Access classification** | Walks `fir.load`/`fir.store`/`fir.array_coor` and classifies each base reference as read, write, or read-write; external or loop-local |
+| **3 — Index pattern matching** | Checks whether array subscripts are derived from the loop IV (safe) or are IV ± constant (loop-carried dependency) |
+| **4 — Reduction detection** | Matches `load → addf/mulf → store` on the same scalar reference |
+| **5 — Final verdict** | Conservative fallback: read-only loops → SAFE, anything else unresolved → UNSAFE |
+
+See [`docs/heuristics.md`](docs/heuristics.md) for the full dependency assumptions.
+
+---
+
+## Test Programs
+
+| File | Pattern | Verdict |
+|---|---|---|
+| `trivial_parallel.f90` | `b(i) = a(i) * 2.0` — separate read/write arrays | **SAFE** `!$OMP PARALLEL DO` |
+| `reduction.f90` | `total = total + a(i)*b(i)` — scalar accumulation | **REDUCTION** `!$OMP PARALLEL DO REDUCTION(+:...)` |
+| `loop_carried_dep.f90` | `a(i) = a(i) + a(i-1)` — reads previous iteration | **UNSAFE** |
+| `nested_loops.f90` | Double DO, 2-D array update | UNSAFE (conservative — outer-loop IV not traceable from inner loop) |
+| `function_call.f90` | `a(i) = sqrt(a(i))` — in-place update | UNSAFE (conservative — same array read+written) |
 
 ---
 
@@ -66,151 +81,77 @@ Fortran source
 ```
 FlangParallelAnalyzer/
 ├── include/FlangParallelAnalyzer/
-│   ├── LoopParallelAnalysis.h
-│   ├── AccessClassifier.h
-│   └── HintEmitter.h
+│   ├── LoopParallelAnalysis.h   # LoopInfo struct, LoopSafety enum, pass factory
+│   └── AccessClassifier.h      # AccessRecord, AccessSummary, classifier API
 ├── lib/
-│   ├── LoopParallelAnalysis.cpp    # main MLIR pass
-│   ├── AccessClassifier.cpp        # variable read/write tracking
-│   ├── ReductionDetector.cpp       # sum/product pattern matching
-│   └── HintEmitter.cpp             # OMP directive generation
+│   ├── LoopParallelAnalysis.cpp # Phases 1–5, MLIR pass definition
+│   └── AccessClassifier.cpp    # fir.load/store/array_coor walker
 ├── tools/fpa-tool/
-│   └── main.cpp                    # standalone driver
+│   └── main.cpp                # standalone CLI driver (no MlirOptMain)
 ├── tests/
-│   ├── fortran/                    # .f90 test programs
-│   └── lit/                        # LLVM LIT .mlir unit tests
-├── scripts/
-│   ├── annotate_source.py          # inject hints into .f90 files
-│   └── visualize.py                # score visualization
+│   ├── fortran/                # .f90 programs used for end-to-end tests
+│   └── lit/                    # MLIR LIT unit tests for Phase 2
 └── docs/
-    ├── design.md
-    └── heuristics.md
+    ├── heuristics.md           # dependency assumptions & known limitations
+    └── setup.md                # full build guide (macOS & GitHub Codespaces)
 ```
 
 ---
 
-## Prerequisites
+## Building and Running
 
-| Tool | Version |
-|---|---|
-| CMake | ≥ 3.20 |
-| Ninja | any recent |
-| Clang | ≥ 17 (to build LLVM) |
-| LLVM/Flang | `llvmorg-18.1.0` (pinned) |
-| Python | ≥ 3.9 (scripts only) |
+### GitHub Codespaces (recommended — zero setup)
 
----
-
-## Build Instructions
-
-### 1. Build LLVM + Flang
+Open the repo in a Codespace, then:
 
 ```bash
-git clone --branch llvmorg-18.1.0 --depth 1 \
-  https://github.com/llvm/llvm-project.git
+# Install LLVM 18 + Flang
+sudo apt-get install -y llvm-18 mlir-18-tools libmlir-18-dev \
+    flang-18 libflang-18-dev libclang-cpp-18-dev
 
-cd llvm-project && mkdir build && cd build
+# Fix missing unversioned symlink
+sudo ln -sf /usr/lib/llvm-18/lib/libclang-cpp.so.18.1 \
+            /usr/lib/llvm-18/lib/libclang-cpp.so
 
-cmake ../llvm \
-  -DLLVM_ENABLE_PROJECTS="clang;flang;mlir" \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DLLVM_TARGETS_TO_BUILD=X86 \
-  -DLLVM_ENABLE_ASSERTIONS=ON \
-  -G Ninja
-
-ninja flang-new mlir-opt
+# Build
+mkdir build && cd build
+cmake .. -DLLVM_BUILD_DIR=/usr/lib/llvm-18 -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc) fpa-tool
 ```
 
-> Tip: set `CMAKE_C_COMPILER=clang CMAKE_CXX_COMPILER=clang++` and enable `ccache` to cut build time significantly.
-
-### 2. Build FlangParallelAnalyzer
+### Run on a Fortran file
 
 ```bash
-git clone https://github.com/aryangupta2103/FlangParallelAnalyzer.git
-cd FlangParallelAnalyzer && mkdir build && cd build
+export PATH="/usr/lib/llvm-18/bin:$PATH"
 
-cmake .. \
-  -DMLIR_DIR=/path/to/llvm-project/build/lib/cmake/mlir \
-  -DFLANG_DIR=/path/to/llvm-project/build/lib/cmake/flang \
-  -G Ninja
+# Step 1 — emit FIR
+flang-new -fc1 -emit-fir tests/fortran/trivial_parallel.f90 -o /tmp/out.fir
 
-ninja
+# Step 2 — analyse
+./build/tools/fpa-tool/fpa-tool /tmp/out.fir
 ```
 
-### 3. Run on a Fortran file
+### Run all five tests
 
 ```bash
-flang-new -fc1 -emit-fir tests/fortran/trivial_parallel.f90 -o - | \
-  ./build/bin/fpa-tool --fir-loop-parallel-analysis
+for f in tests/fortran/*.f90; do
+  echo "=== $(basename $f) ==="
+  flang-new -fc1 -emit-fir "$f" -o /tmp/t.fir 2>/dev/null && \
+    ./build/tools/fpa-tool/fpa-tool /tmp/t.fir
+done
 ```
 
 ---
 
-## Test Programs
+## Implementation Status
 
-| File | Pattern | Expected Hint |
-|---|---|---|
-| `trivial_parallel.f90` | `b(i) = a(i) * 2.0` | `!$OMP PARALLEL DO` |
-| `reduction.f90` | `sum = sum + a(i)*b(i)` | `REDUCTION(+:sum)` |
-| `loop_carried_dep.f90` | `a(i) = a(i) + a(i-1)` | UNSAFE |
-| `function_call.f90` | `a(i) = sqrt(a(i))` | UNSAFE (until intrinsic whitelist) |
-| `nested_loops.f90` | double independent DO | `COLLAPSE(2)` |
-
-Run all tests:
-```bash
-cd tests && bash run_tests.sh
-```
-
----
-
-## Development Roadmap
-
-- [x] Project design & README
-- [x] Phase 1 — Skeleton pass: walk `fir.do_loop`, print location + bounds
-- [x] Phase 2 — Variable classifier: read/write/read-write tracking + LIT test suite
-- [ ] Phase 3 — Index pattern matcher: detect `a(i)` vs `a(i±k)`
-- [ ] Phase 4 — Reduction detector: scalar accumulation patterns
-- [ ] Phase 5 — Hint emitter + JSON output
-- [ ] Extension A — Pure intrinsic whitelist (`sqrt`, `sin`, …)
-- [ ] Extension B — Parallelizability score (0–100)
-- [ ] Extension C — Source annotator script
-- [ ] Extension D — Collapse detection for nested loops
-
----
-
-## Implementation Reference
-
-The analysis pass is implemented in C++ using the [MLIR Pass Infrastructure](https://mlir.llvm.org/docs/PassManagement/).
-
-Core class:
-```cpp
-struct LoopParallelAnalysisPass
-    : public PassWrapper<LoopParallelAnalysisPass,
-                         OperationPass<func::FuncOp>> {
-  void runOnOperation() override {
-    getOperation().walk([&](fir::DoLoopOp loop) {
-      analyzeLoop(loop);
-    });
-  }
-};
-```
-
-Key FIR operations analyzed:
-- `fir.do_loop` — Fortran DO loop
-- `fir.array_fetch` / `fir.array_update` — array reads/writes
-- `fir.load` / `fir.store` — scalar memory operations
-- `fir.call` — function/subroutine calls
-
----
-
-## Contributing
-
-This is a research/student project. Issues and PRs are welcome.
-
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/reduction-detector`)
-3. Commit with clear messages
-4. Open a PR against `main`
+- [x] Phase 1 — structural metadata (bounds, depth, op count)
+- [x] Phase 2 — access classification (`fir.array_coor` + `fir.declare` stripping)
+- [x] Phase 3 — index pattern matching (IV-derived vs IV±k offset)
+- [x] Phase 4 — scalar reduction detection (`load → binop → store`)
+- [x] Phase 5 — conservative final verdict
+- [x] LIT test suite for Phase 2
+- [x] Dependency assumptions document (`docs/heuristics.md`)
 
 ---
 
