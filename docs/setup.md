@@ -78,17 +78,22 @@ mkdir build && cd build
 cmake ../llvm \
   -G Ninja \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_C_COMPILER=$(xcrun -find clang) \
+  -DCMAKE_CXX_COMPILER=$(xcrun -find clang++) \
   -DLLVM_ENABLE_PROJECTS="clang;flang;mlir" \
   -DLLVM_TARGETS_TO_BUILD="AArch64" \
   -DLLVM_ENABLE_ASSERTIONS=ON \
   -DLLVM_PARALLEL_LINK_JOBS=2
 ```
 
-> **What each flag means:**
-> - `RelWithDebInfo` — optimised build but with debug symbols (faster than Debug, debuggable)
-> - `clang` as compiler — Homebrew clang is faster at building LLVM than Apple's Xcode clang
+> **Important — use Xcode clang, not Homebrew clang:**
+> Homebrew ships LLVM 22.x which has a stricter `libc++` that rejects valid
+> LLVM 18 code (static assert on non-empty comparators in RDFGraph.cpp).
+> Xcode's clang ships with an older, compatible `libc++`. Using `xcrun -find clang`
+> always resolves to the Xcode toolchain clang, not Homebrew's.
+>
+> Other flags:
+> - `RelWithDebInfo` — optimised build with debug symbols (debuggable, not slow)
 > - `ENABLE_PROJECTS` — only build what we need (skips ~20 other subprojects)
 > - `TARGETS_TO_BUILD=AArch64` — only emit code for Apple Silicon (skips x86, ARM32, etc.)
 > - `PARALLEL_LINK_JOBS=2` — linking is RAM-heavy; limit to 2 parallel links to avoid OOM
@@ -201,6 +206,17 @@ Run cmake again from inside the `build/` directory.
 
 **Out of memory during link**
 Reduce `LLVM_PARALLEL_LINK_JOBS` from 2 to 1.
+
+**RDFGraph.cpp: static assertion failed / 'std::less<RegisterRef>' is not empty**
+You're using Homebrew LLVM 22 to compile LLVM 18 source — version mismatch.
+Fix: use Xcode clang instead:
+```bash
+rm -rf build && mkdir build && cd build
+cmake ../llvm -G Ninja \
+  -DCMAKE_C_COMPILER=$(xcrun -find clang) \
+  -DCMAKE_CXX_COMPILER=$(xcrun -find clang++) \
+  ... (rest of flags unchanged)
+```
 
 **FileCheck: command not found**
 Set `FILECHECK=~/Developer/llvm-project/build/bin/FileCheck` explicitly.
