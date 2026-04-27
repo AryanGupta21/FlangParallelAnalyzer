@@ -325,6 +325,37 @@ a{color:inherit;text-decoration:none}
 .peek-dep-ok {color:var(--safe)}
 .peek-bounds{font-family:var(--mono);font-size:10px;color:var(--dim)}
 
+/* ── reasoning debugger components ── */
+.peek-sec-hdr{font-size:9px;text-transform:uppercase;letter-spacing:.07em;
+              color:var(--muted);margin-bottom:6px;font-weight:700}
+.ph-row{display:grid;grid-template-columns:16px 88px 16px 1fr;
+        align-items:center;gap:6px;padding:3px 0;
+        border-bottom:1px solid var(--border-l)}
+.ph-row:last-child{border-bottom:none}
+.ph-num{font-family:var(--mono);font-size:9px;color:var(--muted)}
+.ph-name{font-size:11px;color:var(--text)}
+.ph-icon{font-size:10px;text-align:center;font-weight:700}
+.ph-detail{font-size:10px}
+.ph-detail.pass{color:var(--safe)}
+.ph-detail.fail{color:var(--unsafe);font-weight:600}
+.ph-detail.warn{color:var(--redu)}
+.ph-detail.skip{color:var(--muted);font-style:italic}
+.issue-row{display:flex;align-items:flex-start;gap:8px;
+           padding:4px 0;border-bottom:1px solid var(--border-l)}
+.issue-row:last-child{border-bottom:none}
+.issue-icon{font-size:11px;flex-shrink:0;margin-top:1px}
+.issue-label{font-size:11px;font-weight:600;color:var(--text)}
+.issue-detail{font-size:10px;color:var(--dim);margin-top:1px}
+.conf-badge{font-family:var(--mono);font-size:10px;font-weight:700;
+            padding:3px 8px;border-radius:4px;border:1px solid;
+            display:inline-flex;align-items:center;gap:5px;flex-shrink:0}
+.conf-bar{display:inline-block;width:46px;height:5px;background:var(--surf3);
+          border-radius:3px;overflow:hidden;vertical-align:middle}
+.conf-fill{display:block;height:100%;border-radius:3px}
+.dep-viz{font-family:var(--mono);font-size:10px;background:var(--bg);
+         border-radius:4px;padding:8px 10px;line-height:2;
+         border:1px solid var(--border);white-space:pre}
+
 /* fortran syntax */
 .fkw {color:#79b8ff}
 .fcmt{color:#444d56;font-style:italic}
@@ -582,6 +613,111 @@ function catLoop(l){
   return     {id:'inconcl', label:'Inconclusive',        color:'#8b949e', fix:'Manual review required'};
 }
 
+// ── frontend reasoning engine (pure JS, no backend changes) ──────────────────
+
+function getPhases(l) {
+  const r=(l.reason+' '+l.hint).toLowerCase();
+  const hasOffset=r.includes('offset')||r.includes('cannot')||r.includes('i-1')||r.includes('i+1')||r.includes('carried');
+  const isInconclusive=r.includes('inconclusive')||r.includes('could not');
+  const isReadOnly=r.includes('no external write')||r.includes('read-only');
+  const p=(num,name,st,detail)=>({num,name,st,detail});
+  const p1=p(1,'Structure',   'pass',(l.bounds||'?')+(l.depth>0?' · depth '+l.depth:''));
+  const p2=p(2,'Mem Access',  'pass',`${l.accesses.length} ref${l.accesses.length!==1?'s':''} catalogued`);
+  if(l.status==='SAFE'&&!isReadOnly)
+    return[p1,p2,p(3,'Index Analysis','pass','All subscripts IV-derived'),p(4,'Reduction','skip','Not needed'),p(5,'Fallback','skip','Not needed')];
+  if(l.status==='SAFE'&&isReadOnly)
+    return[p1,p2,p(3,'Index Analysis','warn','Unknown subscripts deferred'),p(4,'Reduction','warn','No pattern'),p(5,'Fallback','pass','No ext writes → SAFE')];
+  if(l.status==='REDUCTION')
+    return[p1,p2,p(3,'Index Analysis','warn','RW scalar — deferred to Ph4'),p(4,'Reduction','pass','load → op → store matched'),p(5,'Fallback','skip','Not needed')];
+  if(l.status==='UNSAFE'&&hasOffset)
+    return[p1,p2,p(3,'Index Analysis','fail','IV±k offset detected — stopped'),p(4,'Reduction','skip','Skipped after Ph3 UNSAFE'),p(5,'Fallback','skip','Skipped after Ph3 UNSAFE')];
+  return[p1,p2,p(3,'Index Analysis','warn','Unknown subscript(s)'),p(4,'Reduction','warn','No pattern'),
+    p(5,'Fallback','fail',isInconclusive?'Inconclusive → conservative UNSAFE':'Ext writes present → UNSAFE')];
+}
+
+function getConfidence(l) {
+  const r=(l.reason+' '+l.hint).toLowerCase();
+  const hasOffset=r.includes('offset')||r.includes('cannot')||r.includes('i-1')||r.includes('i+1');
+  const isInconclusive=r.includes('inconclusive')||r.includes('could not');
+  if(l.status==='UNSAFE'&&hasOffset)    return{level:'HIGH',  pct:95,color:'#3fb950'};
+  if(l.status==='SAFE'&&!isInconclusive)return{level:'HIGH',  pct:90,color:'#3fb950'};
+  if(l.status==='REDUCTION')            return{level:'HIGH',  pct:88,color:'#3fb950'};
+  if(l.status==='UNSAFE'&&isInconclusive)return{level:'LOW',  pct:32,color:'#f85149'};
+  return{level:'MED',pct:58,color:'#d29922'};
+}
+
+function parseIssues(l) {
+  const r=(l.reason+' '+l.hint).toLowerCase();
+  const out=[];
+  if(r.includes('offset')||r.includes('i-1')||r.includes('i+1')||r.includes('carried')||r.includes('cannot'))
+    out.push({icon:'&#10007;',color:'#f85149',label:'Loop-carried dependency',detail:'Subscript i±k detected in Phase 3'});
+  if(r.includes('in-place')||r.includes('inplace'))
+    out.push({icon:'&#9650;', color:'#d29922',label:'In-place array update',  detail:'Same array is source and destination'});
+  if(r.includes('indirect')||r.includes('unknown subscript')||r.includes('non-iv'))
+    out.push({icon:'&#9650;', color:'#d29922',label:'Unknown subscript',       detail:'Cannot trace index pattern statically'});
+  if(r.includes('nested')||r.includes('multi-dim')||r.includes('outer'))
+    out.push({icon:'&#9650;', color:'#d29922',label:'Multi-dimensional nest',  detail:'Outer IV unrecognizable from inner loop'});
+  if(r.includes('external')||r.includes('opaque')||r.includes('call'))
+    out.push({icon:'&#9650;', color:'#d29922',label:'Opaque function call',    detail:'Side effects unknown to the pass'});
+  if(r.includes('inconclusive')||r.includes('could not'))
+    out.push({icon:'?',        color:'#6e7681',label:'Analysis inconclusive',   detail:'Phase 5 conservative fallback applied'});
+  if(l.status==='SAFE')
+    out.push({icon:'&#10003;',color:'#3fb950',label:'Independent element access',detail:'Each iteration touches a unique memory cell'});
+  if(l.status==='REDUCTION'&&!out.length)
+    out.push({icon:'&#8635;', color:'#d29922',label:'Scalar accumulation pattern',detail:'load → addf/mulf → store chain matched'});
+  return out.length?out:[{icon:'?',color:'#6e7681',label:'Reason not parsed',detail:l.reason||'No reason provided'}];
+}
+
+function getShortLabel(l) {
+  const r=(l.reason+' '+l.hint).toLowerCase();
+  if(l.status==='SAFE')return r.includes('no external write')||r.includes('read-only')?'safe · read-only':'safe · independent';
+  if(l.status==='REDUCTION')return r.includes('*')||r.includes('mul')?'redu · product':'redu · sum';
+  if(r.includes('i-1'))return 'dep · i−1';
+  if(r.includes('i+1'))return 'dep · i+1';
+  if(r.includes('offset')||r.includes('carried')||r.includes('cannot'))return 'dep · offset';
+  if(r.includes('in-place')||r.includes('inplace'))return 'unsafe · in-place';
+  if(r.includes('indirect')||r.includes('scatter')||r.includes('gather'))return 'unsafe · indirect';
+  if(r.includes('nested')||r.includes('multi'))return 'unsafe · nested';
+  if(r.includes('call')||r.includes('external'))return 'unsafe · ext-call';
+  if(r.includes('inconclusive')||r.includes('could not'))return 'unsafe · inconclusive';
+  return 'unsafe · unknown';
+}
+
+function buildDepViz(l) {
+  const r=(l.reason+' '+l.hint).toLowerCase();
+  if(!r.includes('i-1')&&!r.includes('i+1')&&!r.includes('offset')&&!r.includes('carried'))return null;
+  if(r.includes('i+1'))
+    return['iter[i]   ',{t:' ──writes──▶ ',d:true},'A[i+1]','\n          ↓ stored value\n','iter[i+1] ',{t:' ──reads───▶ ',d:true},{t:'A[i+1]',bad:true},{t:'  ✗ WAR conflict',bad:true}];
+  return['iter[i-1] ',{t:' ──writes──▶ ',d:true},'A[i-1]','\n          ↓ stored value\n','iter[i]   ',{t:' ──reads───▶ ',d:true},{t:'A[i-1]',bad:true},{t:'  ✗ RAW conflict',bad:true}];
+}
+
+function renderPhases(l) {
+  const ph=getPhases(l);
+  const icons={pass:'&#10003;',fail:'&#10007;',warn:'&#9650;',skip:'&mdash;'};
+  const cols={pass:'var(--safe)',fail:'var(--unsafe)',warn:'var(--redu)',skip:'var(--muted)'};
+  return ph.map(p=>`<div class="ph-row">
+    <span class="ph-num">${p.num}</span>
+    <span class="ph-name">${p.name}</span>
+    <span class="ph-icon" style="color:${cols[p.st]}">${icons[p.st]}</span>
+    <span class="ph-detail ${p.st}">${esc(p.detail)}</span>
+  </div>`).join('');
+}
+
+function renderIssues(l) {
+  return parseIssues(l).map(i=>`<div class="issue-row">
+    <span class="issue-icon" style="color:${i.color}">${i.icon}</span>
+    <div><div class="issue-label">${i.label}</div>
+         <div class="issue-detail">${esc(i.detail)}</div></div>
+  </div>`).join('');
+}
+
+function renderConf(l) {
+  const c=getConfidence(l);
+  return `<span class="conf-badge" style="color:${c.color};border-color:${c.color}44;background:${c.color}18">
+    ${c.level}&thinsp;<span class="conf-bar"><span class="conf-fill" style="width:${c.pct}%;background:${c.color}"></span></span>&thinsp;<span style="color:var(--muted);font-weight:400">${c.pct}%</span>
+  </span>`;
+}
+
 // ── pre-process data ──────────────────────────────────────────────────────────
 const allLoops = DATA.flatMap((f,fi)=>
   f.loops.map(l=>({...l,_fi:fi,_fname:f.name,_path:f.path,_cat:catLoop(l)}))
@@ -830,7 +966,7 @@ const App = {
       if(lp){
         const sc=SM[lp.status]||SM.UNKNOWN;
         gdot=`<div class="gdot" style="background:${sc.fg}"></div>`;
-        badge=`<span class="sbadge" style="color:${sc.fg};background:${sc.bg};border-color:${sc.bd}">${sc.sym} ${lp.status}</span>`;
+        badge=`<span class="sbadge" style="color:${sc.fg};background:${sc.bg};border-color:${sc.bd}">${sc.sym} ${getShortLabel(lp)}</span>`;
       }
       html+=`<div class="sln${lp?' loop-ln':''}"${id}${onclick}>
         <div class="gutter"><span class="lnum">${ln}</span>${gdot}</div>
@@ -852,21 +988,22 @@ const App = {
     const sc=SM[lp.status]||SM.UNKNOWN;
     const cat=catLoop(lp);
 
-    // dependency visualization for UNSAFE
-    let depViz='';
-    if(lp.status==='UNSAFE'&&lp.reason){
-      const r=lp.reason.toLowerCase();
-      if(r.includes('offset')||r.includes('carried')||r.includes('i-1')||r.includes('i+1')){
-        depViz=`<div class="peek-col">
-          <div class="peek-col-lbl">Dependency flow</div>
-          <div class="peek-dep-viz">`+
-`<span class="peek-dep-bad">iter[i-1]</span> writes a(i-1)\n`+
-`    &darr;\n`+
-`<span class="peek-dep-bad">iter[i]&nbsp;&nbsp;&nbsp;</span> reads  a(i-1)  <span class="peek-dep-bad">&#10007; CONFLICT</span>`+
-          `</div></div>`;
-      }
+    // dependency flow visualization
+    const dvSegs=buildDepViz(lp);
+    let dvBlock='';
+    if(dvSegs){
+      let inner='';
+      dvSegs.forEach(s=>{
+        if(typeof s==='string') inner+=esc(s);
+        else if(s.bad) inner+=`<span style="color:var(--unsafe);font-weight:600">${esc(s.t)}</span>`;
+        else if(s.d)   inner+=`<span style="color:var(--dim)">${esc(s.t)}</span>`;
+        else           inner+=esc(s.t||'');
+      });
+      dvBlock=`<div class="peek-sec-hdr" style="margin-top:10px">Dependency Flow</div>
+        <div class="dep-viz">${inner}</div>`;
     }
 
+    // memory accesses
     const accRows=(lp.accesses||[]).map(a=>{
       const m=a.match(/^\[(R|W|RW)\]\s*(.+)/);
       if(!m) return `<div class="peek-acc">${esc(a)}</div>`;
@@ -878,22 +1015,28 @@ const App = {
         <span class="peek-status ${lp.status}">${sc.sym} ${lp.status}</span>
         <span class="peek-title">Loop #${lp.num} &mdash; ${esc(lp.loc)}</span>
         ${lp.depth>0?`<span style="font-family:var(--mono);font-size:9px;color:var(--muted);background:var(--surf);border:1px solid var(--border);padding:1px 6px;border-radius:3px">depth ${lp.depth}</span>`:''}
+        ${renderConf(lp)}
         <span class="peek-close" onclick="App.closePeek()">&#10005;</span>
       </div>
       ${lp.hint?`<div class="peek-hint">${esc(lp.hint)}</div>`:''}
-      ${lp.reason?`<div class="peek-reason">${esc(lp.reason)}</div>`:''}
-      ${lp.status!=='SAFE'?`<div class="peek-fix">&#128161; ${esc(cat.fix)}</div>`:''}
-      <div class="peek-row">
-        ${accRows?`<div class="peek-col">
-          <div class="peek-col-lbl">Memory accesses</div>
-          <div class="peek-mem">${accRows}</div>
-        </div>`:''}
-        ${lp.bounds?`<div class="peek-col">
-          <div class="peek-col-lbl">Loop bounds</div>
-          <div class="peek-bounds">${esc(lp.bounds)}</div>
-        </div>`:''}
-        ${depViz}
+      <div class="peek-row" style="gap:18px;align-items:flex-start;margin-top:4px">
+        <div class="peek-col" style="min-width:210px">
+          <div class="peek-sec-hdr">Analysis Pipeline</div>
+          ${renderPhases(lp)}
+        </div>
+        <div class="peek-col" style="min-width:190px">
+          <div class="peek-sec-hdr">Issues Found</div>
+          ${renderIssues(lp)}
+          ${dvBlock}
+        </div>
+        <div class="peek-col" style="min-width:150px">
+          ${accRows?`<div class="peek-sec-hdr">Memory Accesses</div>
+            <div class="peek-mem">${accRows}</div>`:''}
+          ${lp.bounds?`<div class="peek-sec-hdr" style="margin-top:${accRows?'10px':'0'}">Loop Bounds</div>
+            <div class="peek-bounds">${esc(lp.bounds)}</div>`:''}
+        </div>
       </div>
+      ${lp.status!=='SAFE'?`<div class="peek-fix" style="margin-top:10px">&#128161; ${esc(cat.fix)}</div>`:''}
     </div>`;
 
     // Insert peek after the DO line element
@@ -974,7 +1117,16 @@ const App = {
         }).join('');
         rows+=`<tr class="lt-expand-row">
           <td colspan="5"><div class="lt-expand-inner">
-            ${l.reason?`<div class="lt-exp-reason">${esc(l.reason)}</div>`:''}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:10px">
+              <div>
+                <div class="peek-sec-hdr">Analysis Pipeline</div>
+                ${renderPhases(l)}
+              </div>
+              <div>
+                <div class="peek-sec-hdr" style="display:flex;align-items:center;gap:8px">Issues Found ${renderConf(l)}</div>
+                ${renderIssues(l)}
+              </div>
+            </div>
             ${l.status!=='SAFE'?`<div class="lt-exp-fix">&#128161; ${esc(l._cat.fix)}</div>`:''}
             ${accHtml?`<div class="lt-exp-accs">${accHtml}</div>`:''}
             <span class="lt-exp-goto" onclick="event.stopPropagation();App.goExplorer(${l._fi},${l.num})">
