@@ -220,8 +220,21 @@ flang-new -fc1 -emit-fir tests/fortran/trivial_parallel.f90 -o /tmp/out.fir
 ### Run all tests + generate HTML report
 
 ```bash
-python3 scripts/report.py tests/fortran/*.f90 -o report.html
+# Generate report for all 35 tests (5 original + 30 comprehensive)
+python3 scripts/report.py -o report.html
 python3 -m http.server 8080   # open the Ports tab in VS Code → port 8080
+
+# Or target a specific folder
+python3 scripts/report.py tests/fortran/*.f90 -o report.html
+python3 scripts/report.py tests/comprehensive/*.f90 -o report.html
+```
+
+### Run automated test suite
+
+```bash
+python3 scripts/run_tests.py          # all 30 comprehensive tests
+python3 scripts/run_tests.py -v       # verbose — show full fpa-tool output per test
+python3 scripts/run_tests.py --dir tests/fortran   # original 5 tests only
 ```
 
 ---

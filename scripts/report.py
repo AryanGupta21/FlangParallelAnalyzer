@@ -239,7 +239,18 @@ header p  { color: #8892a4; margin-top: 6px; font-size: .875rem; }
 }
 """
 
-def build_html(sections: str) -> str:
+def build_html(sections: str, stats: dict | None = None) -> str:
+    stat_line = ""
+    if stats:
+        stat_line = (
+            f'<p style="margin-top:10px;font-size:.85rem;color:#8892a4">'
+            f'{stats["files"]} files &nbsp;·&nbsp; '
+            f'{stats["loops"]} loops analysed &nbsp;·&nbsp; '
+            f'<span style="color:#6fcf7c">{stats["safe"]} SAFE</span> &nbsp;·&nbsp; '
+            f'<span style="color:#f2c94c">{stats["reduction"]} REDUCTION</span> &nbsp;·&nbsp; '
+            f'<span style="color:#eb5757">{stats["unsafe"]} UNSAFE</span>'
+            f'</p>'
+        )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -252,6 +263,7 @@ def build_html(sections: str) -> str:
 <header>
   <h1>⚡ FlangParallelAnalyzer — Loop Parallelism Report</h1>
   <p>Automatic OpenMP hint generation for Fortran DO loops via FIR analysis (LLVM 18 / Flang)</p>
+  {stat_line}
 </header>
 <div class="legend">
   <div class="leg"><div class="leg-dot" style="background:#28a745"></div>
@@ -271,14 +283,25 @@ def build_html(sections: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser(description="Generate HTML parallelism report")
-    ap.add_argument("files", nargs="+", help=".f90 Fortran source files")
+    ap.add_argument("files", nargs="*",
+                    help=".f90 Fortran source files (default: all tests/fortran + tests/comprehensive)")
     ap.add_argument("-o", "--output", default="report.html",
                     help="Output HTML file (default: report.html)")
     ap.add_argument("--open", action="store_true",
                     help="Open the report in the default browser when done")
     args = ap.parse_args()
 
+    # Default: include both the original tests and the comprehensive suite
+    if not args.files:
+        from pathlib import Path
+        args.files = (
+            sorted(Path("tests/fortran").glob("*.f90")) +
+            sorted(Path("tests/comprehensive").glob("*.f90"))
+        )
+
     sections = []
+    stats = {"files": 0, "loops": 0, "safe": 0, "reduction": 0, "unsafe": 0}
+
     for f90 in args.files:
         print(f"Analysing {f90} …", file=sys.stderr)
         try:
@@ -297,11 +320,17 @@ def main():
               file=sys.stderr)
         sections.append(render_file_section(f90, source, loops))
 
+        stats["files"] += 1
+        stats["loops"] += len(loops)
+        stats["safe"]      += sum(1 for l in loops if l["status"] == "SAFE")
+        stats["reduction"] += sum(1 for l in loops if l["status"] == "REDUCTION")
+        stats["unsafe"]    += sum(1 for l in loops if l["status"] == "UNSAFE")
+
     if not sections:
         print("No files analysed successfully.", file=sys.stderr)
         sys.exit(1)
 
-    html = build_html("\n".join(sections))
+    html = build_html("\n".join(sections), stats=stats)
     out  = args.output
     with open(out, "w") as f:
         f.write(html)
