@@ -1,10 +1,12 @@
-! EXPECTED: UNSAFE
-! HINT: loop-carried dependency (conservative — conditional array write)
+! EXPECTED: SAFE
+! HINT: !$OMP PARALLEL DO
 ! CATEGORY: control_flow_complexity
-! DESC: Conditional write — if (a(i) > 0) b(i) = a(i)
-!       The array b is written conditionally; because the write is inside
-!       an IF block the FIR contains additional control flow ops that make
-!       the subscript trace non-trivial.  Conservative: UNSAFE.
+! DESC: Conditional write — if (a(i) > 0.0) b(i) = a(i) else b(i) = 0.0
+!       a is read-only with IV subscript; b is written with IV subscript in
+!       both branches.  No cross-iteration dependency exists — iteration i
+!       only touches a(i) and b(i) regardless of the branch taken.
+!       The pass correctly returns SAFE: the IF control flow does not affect
+!       the absence of loop-carried dependencies.
 subroutine unsafe_conditional_write(a, b, n)
   implicit none
   integer, intent(in)  :: n

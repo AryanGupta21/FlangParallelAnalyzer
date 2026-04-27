@@ -49,7 +49,7 @@ compiles to FIR, runs `fpa-tool`, parses `Status :` lines, and compares.
 | 04 | `04_reduction_sum.f90` | `total+=a(i)*b(i)` | REDUCTION | `+` |
 | 05 | `05_reduction_product.f90` | `prod*=a(i)` | REDUCTION | `*` |
 | 10 | `10_reduction_integer.f90` | `isum+=ia(i)` (int) | REDUCTION | `+` (addi) |
-| 19 | `19_reduction_saxpy_sum.f90` | `s+=alpha*x(i)+y(i)` | REDUCTION | `+` |
+| 19 | `19_reduction_saxpy_sum.f90` | `s=s+alpha*x(i)+y(i)` | **UNSAFE** | chained addf not matched by Phase 4 |
 | 30 | `30_reduction_norm2.f90` | `norm2+=a(i)*a(i)` | REDUCTION | `+` |
 
 **Phase:** Phase 4 — load → binary-op → store chain on a scalar function argument.
@@ -102,7 +102,7 @@ the others.
 | # | File | Pattern | Expected | Reason |
 |---|------|---------|----------|--------|
 | 14 | `14_nested_outer.f90` | 2D matrix loop | UNSAFE | outer IV unknown from inner loop |
-| 15 | `15_unsafe_conditional_write.f90` | IF-ELSE write | UNSAFE | conditional control flow, conservative |
+| 15 | `15_unsafe_conditional_write.f90` | IF-ELSE write to separate arrays | SAFE | correctly parallel — `a` read-only, `b` written at IV index in both branches |
 | 23 | `23_unsafe_nested_reduction.f90` | row-wise dot product | UNSAFE | outer IV, multi-dim |
 
 ---
@@ -113,8 +113,8 @@ the others.
 |---|------|---------|----------|--------|
 | 08 | `08_dep_inplace.f90` | `a(i)=a(i)*3` | UNSAFE | same array RW, conservative |
 | 11 | `11_safe_read_only.f90` | read-only scan | SAFE | Phase 5: no external writes |
-| 12 | `12_unsafe_function_call.f90` | external call | UNSAFE | unknown side effects |
-| 13 | `13_unsafe_intrinsic_sqrt.f90` | `a(i)=sqrt(a(i))` | UNSAFE | in-place + external call |
+| 12 | `12_unsafe_function_call.f90` | external call | SAFE | **known false positive**: Fortran passes args by reference so FIR only shows a store to a(i); opaque call side-effects are invisible |
+| 13 | `13_unsafe_intrinsic_sqrt.f90` | `a(i)=sqrt(a(i))` | UNSAFE | in-place + intrinsic call chain, conservative |
 
 ---
 
@@ -213,6 +213,8 @@ than crashing.
 | 4 | POINTER / EQUIVALENCE aliasing not analysed | — |
 | 5 | max/min/AND/OR reductions not detected (Phase 4) | 25 |
 | 6 | Local alloca accumulators not detected as reductions | — |
+| 7 | Chained reduction expressions (`s = s + f(x(i)) + g(y(i))`) not matched by Phase 4's single-step chain | 19 |
+| 8 | External function call side effects invisible in FIR — opaque calls produce false-positive SAFE | 12 |
 
 All limitations produce conservative UNSAFE verdicts (false negatives),
 never false positives (SAFE when actually unsafe).
