@@ -1,115 +1,204 @@
 # FlangParallelAnalyzer
 
-An MLIR analysis pass for the [Flang](https://flang.llvm.org/) Fortran compiler that detects parallelizable DO loops and emits OpenMP directives.
-
-The tool works at the **FIR (Fortran Intermediate Representation)** level — the same IR that Flang produces before lowering to LLVM IR — giving it access to array shapes, loop structure, and variable intent annotations.
+An MLIR analysis pass for the [Flang](https://flang.llvm.org/) Fortran compiler
+that automatically detects parallelizable DO loops and emits OpenMP directives.
 
 ---
 
-## Sample Output
+## What it does
+
+Given a Fortran source file, the tool tells you — **per loop** — whether it is
+safe to parallelize, needs a reduction clause, or has a loop-carried dependency
+that makes it unsafe.
 
 ```
-$ fpa-tool trivial_parallel.fir
-
-[FlangParallelAnalyzer] Function: _QPscale
-------------------------------------------------------------
-
-  Loop #1 @ trivial_parallel.fir:30
-  Bounds : [? .. ? step 1]
-  Access : ext-reads=1  ext-writes=1  ext-readwrites=1  local-writes=0
-           [R] array — %arg0
-           [W] array — %arg1
-           [RW] scalar — %1
-  Status : SAFE
-  Hint   : !$OMP PARALLEL DO
-  Reason : Independent per-element access: each iteration reads a(i) and
-           writes b(i) with no overlap across iterations.
-
-------------------------------------------------------------
-```
-
-```
-$ fpa-tool loop_carried_dep.fir
-
-  Loop #1 @ loop_carried_dep.fir:22
-  Status : UNSAFE
-  Hint   : ! Cannot parallelize
-  Reason : Loop-carried dependency: array accessed at i±k offset.
-           Iteration i reads data written by a neighbouring iteration.
-```
-
-```
-$ fpa-tool reduction.fir
-
-  Loop #1 @ reduction.fir:32
-  Status : REDUCTION
-  Hint   : !$OMP PARALLEL DO REDUCTION(+:%arg3)
-  Reason : Scalar accumulation: load → + → store on the same reference.
-           Safe to parallelize with the REDUCTION clause.
+Status : SAFE
+Hint   : !$OMP PARALLEL DO
+Reason : Independent per-element access: each iteration reads a(i) and
+         writes b(i) with no overlap across iterations.
 ```
 
 ---
 
-## How It Works — Five Phases
+## How it works — the complete pipeline
 
-| Phase | What it does |
-|---|---|
-| **1 — Structure** | Extracts loop bounds, nesting depth, body op count from `fir.do_loop` |
-| **2 — Access classification** | Walks `fir.load`/`fir.store`/`fir.array_coor` and classifies each base reference as read, write, or read-write; external or loop-local |
-| **3 — Index pattern matching** | Checks whether array subscripts are derived from the loop IV (safe) or are IV ± constant (loop-carried dependency) |
-| **4 — Reduction detection** | Matches `load → addf/mulf → store` on the same scalar reference |
-| **5 — Final verdict** | Conservative fallback: read-only loops → SAFE, anything else unresolved → UNSAFE |
-
-See [`docs/heuristics.md`](docs/heuristics.md) for the full dependency assumptions.
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. Fortran source  (.f90)                                      │
+│                                                                 │
+│     subroutine scale(a, b, n)                                   │
+│       do i = 1, n                                               │
+│         b(i) = a(i) * 2.0          ← this loop                 │
+│       end do                                                    │
+│     end subroutine                                              │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           │  flang-new -fc1 -emit-fir
+                           │  (Flang compiler, part of LLVM 18)
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  2. FIR — Fortran Intermediate Representation  (.fir)           │
+│                                                                 │
+│     This is a text file in MLIR format.  Flang compiles your   │
+│     Fortran into this IR before generating machine code.       │
+│     It preserves loop structure, array shapes, and variable    │
+│     intent — exactly what we need for dependency analysis.     │
+│                                                                 │
+│     fir.do_loop %iv = %lo to %hi step %c1 {                    │
+│       %elem_a = fir.array_coor %arg0(%shape) %idx              │
+│       %val    = fir.load %elem_a                               │
+│       %result = arith.mulf %val, %cst                          │
+│       %elem_b = fir.array_coor %arg1(%shape) %idx              │
+│       fir.store %result to %elem_b                             │
+│     }                                                          │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           │  fpa-tool input.fir
+                           │  (our tool — built from this repo)
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  3. MLIR parses the .fir file into an in-memory tree            │
+│                                                                 │
+│     MLIR is a compiler infrastructure from LLVM.  It knows     │
+│     how to read the FIR text format and turn it into C++       │
+│     objects we can walk programmatically.  We did NOT write    │
+│     a parser — we just tell MLIR which file to load.           │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           │  our C++ pass runs
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  4. FlangParallelAnalyzer pass — five phases                    │
+│                                                                 │
+│  Phase 1 — Structure                                           │
+│    Walk every fir.do_loop.  Record bounds, nesting depth,      │
+│    number of inner loops, and total op count.                  │
+│                                                                 │
+│  Phase 2 — Memory access classification                        │
+│    For each loop, walk every fir.load, fir.store, and          │
+│    fir.array_coor inside it.  For each memory reference        │
+│    record:                                                     │
+│      • Is it read, written, or both?                           │
+│      • Is it defined outside the loop (external) or inside?   │
+│      • Is it an array or a scalar?                             │
+│                                                                 │
+│  Phase 3 — Index pattern matching                              │
+│    Look at the subscript of every array access.  Trace it      │
+│    back through type conversions and the Fortran loop-variable │
+│    bookkeeping to ask: is this subscript the loop IV?           │
+│      • a(i)   — IV-derived  → no cross-iteration conflict      │
+│      • a(i-1) — IV ± k      → iteration i reads data written  │
+│                                by iteration i-1  → UNSAFE      │
+│                                                                 │
+│  Phase 4 — Reduction detection                                 │
+│    Look for the scalar accumulation pattern:                   │
+│      %old = fir.load  %acc                                     │
+│      %new = arith.addf %old, <expr>                            │
+│             fir.store %new to %acc                             │
+│    If found → REDUCTION (safe with OpenMP REDUCTION clause)    │
+│                                                                 │
+│  Phase 5 — Final conservative verdict                          │
+│    Any loop still unclassified:                                │
+│      • No external writes → SAFE                               │
+│      • Otherwise          → UNSAFE  (conservative)             │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  5. Output                                                      │
+│                                                                 │
+│  Loop #1 @ trivial_parallel.f90:14                             │
+│  Access : [R] array %arg0   [W] array %arg1   [RW] scalar %1   │
+│  Status : SAFE                                                  │
+│  Hint   : !$OMP PARALLEL DO                                    │
+│  Reason : Independent per-element access — no cross-iteration  │
+│           dependencies detected.                               │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Test Programs
-
-| File | Pattern | Verdict |
-|---|---|---|
-| `trivial_parallel.f90` | `b(i) = a(i) * 2.0` — separate read/write arrays | **SAFE** `!$OMP PARALLEL DO` |
-| `reduction.f90` | `total = total + a(i)*b(i)` — scalar accumulation | **REDUCTION** `!$OMP PARALLEL DO REDUCTION(+:...)` |
-| `loop_carried_dep.f90` | `a(i) = a(i) + a(i-1)` — reads previous iteration | **UNSAFE** |
-| `nested_loops.f90` | Double DO, 2-D array update | UNSAFE (conservative — outer-loop IV not traceable from inner loop) |
-| `function_call.f90` | `a(i) = sqrt(a(i))` — in-place update | UNSAFE (conservative — same array read+written) |
-
----
-
-## Project Structure
+## Source file map
 
 ```
 FlangParallelAnalyzer/
+│
+├── tests/fortran/                   ← Fortran programs used as test inputs
+│   ├── trivial_parallel.f90         │  b(i) = a(i)*2.0  →  SAFE
+│   ├── reduction.f90                │  total += a(i)*b(i)  →  REDUCTION
+│   ├── loop_carried_dep.f90         │  a(i) = a(i)+a(i-1)  →  UNSAFE
+│   ├── nested_loops.f90             │  double DO, 2-D array
+│   └── function_call.f90            │  a(i) = sqrt(a(i))
+│
 ├── include/FlangParallelAnalyzer/
-│   ├── LoopParallelAnalysis.h   # LoopInfo struct, LoopSafety enum, pass factory
-│   └── AccessClassifier.h      # AccessRecord, AccessSummary, classifier API
+│   ├── LoopParallelAnalysis.h       ← LoopInfo struct, LoopSafety enum
+│   └── AccessClassifier.h          ← AccessRecord, AccessSummary types
+│
 ├── lib/
-│   ├── LoopParallelAnalysis.cpp # Phases 1–5, MLIR pass definition
-│   └── AccessClassifier.cpp    # fir.load/store/array_coor walker
+│   ├── LoopParallelAnalysis.cpp     ← THE MAIN PASS (Phases 1–5)
+│   └── AccessClassifier.cpp        ← walks fir.load/store/array_coor
+│
 ├── tools/fpa-tool/
-│   └── main.cpp                # standalone CLI driver (no MlirOptMain)
-├── tests/
-│   ├── fortran/                # .f90 programs used for end-to-end tests
-│   └── lit/                    # MLIR LIT unit tests for Phase 2
+│   └── main.cpp                    ← CLI driver: load .fir → run pass → print
+│
+├── scripts/
+│   └── report.py                   ← Python: runs the tool, generates HTML report
+│
 └── docs/
-    ├── heuristics.md           # dependency assumptions & known limitations
-    └── setup.md                # full build guide (macOS & GitHub Codespaces)
+    ├── heuristics.md               ← full explanation of dependency assumptions
+    └── setup.md                    ← build guide (Codespaces + macOS)
 ```
 
 ---
 
-## Building and Running
+## Key design decisions
 
-### GitHub Codespaces (recommended — zero setup)
+### Why FIR and not the Fortran source text?
 
-Open the repo in a Codespace, then:
+Parsing raw Fortran text is notoriously hard (free vs. fixed format, implicit
+typing, EQUIVALENCE, etc.).  FIR is already a clean, structured tree — every
+array access is an explicit `fir.array_coor` op, every loop is a `fir.do_loop`
+node, and variable intent is annotated.  Analysing FIR is precise where text
+analysis would be approximate.
+
+### Why MLIR?
+
+MLIR provides the pass infrastructure (`PassWrapper`, `PassManager`),
+the IR walker (`op.walk(...)`), and the pattern-matching API
+(`dyn_cast<fir::LoadOp>(op)`).  We get all of that for free by building on top
+of LLVM 18.
+
+### Why conservative on unknown cases?
+
+A false positive (telling you a loop is safe when it isn't) would produce
+**wrong results** at runtime.  A false negative (saying UNSAFE when it is
+actually safe) only means a missed optimization.  The tool always chooses the
+safe side.
+
+---
+
+## Test results
+
+| Fortran file | Pattern | Verdict | OpenMP hint |
+|---|---|---|---|
+| `trivial_parallel.f90` | `b(i) = a(i) * 2.0` | **SAFE** | `!$OMP PARALLEL DO` |
+| `reduction.f90` | `total = total + a(i)*b(i)` | **REDUCTION** | `!$OMP PARALLEL DO REDUCTION(+:total)` |
+| `loop_carried_dep.f90` | `a(i) = a(i) + a(i-1)` | **UNSAFE** | loop-carried dependency |
+| `nested_loops.f90` | 2-D matrix update | UNSAFE (conservative) | multi-dim index not traceable |
+| `function_call.f90` | `a(i) = sqrt(a(i))` | UNSAFE (conservative) | in-place array update |
+
+---
+
+## Building and running
+
+### GitHub Codespaces (zero setup)
 
 ```bash
-# Install LLVM 18 + Flang
+# Install dependencies
 sudo apt-get install -y llvm-18 mlir-18-tools libmlir-18-dev \
     flang-18 libflang-18-dev libclang-cpp-18-dev
 
-# Fix missing unversioned symlink
+# Fix symlink
 sudo ln -sf /usr/lib/llvm-18/lib/libclang-cpp.so.18.1 \
             /usr/lib/llvm-18/lib/libclang-cpp.so
 
@@ -119,39 +208,28 @@ cmake .. -DLLVM_BUILD_DIR=/usr/lib/llvm-18 -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc) fpa-tool
 ```
 
-### Run on a Fortran file
+### Run on one file
 
 ```bash
 export PATH="/usr/lib/llvm-18/bin:$PATH"
 
-# Step 1 — emit FIR
 flang-new -fc1 -emit-fir tests/fortran/trivial_parallel.f90 -o /tmp/out.fir
-
-# Step 2 — analyse
 ./build/tools/fpa-tool/fpa-tool /tmp/out.fir
 ```
 
-### Run all five tests
+### Run all tests + generate HTML report
 
 ```bash
-for f in tests/fortran/*.f90; do
-  echo "=== $(basename $f) ==="
-  flang-new -fc1 -emit-fir "$f" -o /tmp/t.fir 2>/dev/null && \
-    ./build/tools/fpa-tool/fpa-tool /tmp/t.fir
-done
+python3 scripts/report.py tests/fortran/*.f90 -o report.html
+python3 -m http.server 8080   # open the Ports tab in VS Code → port 8080
 ```
 
 ---
 
-## Implementation Status
+## Further reading
 
-- [x] Phase 1 — structural metadata (bounds, depth, op count)
-- [x] Phase 2 — access classification (`fir.array_coor` + `fir.declare` stripping)
-- [x] Phase 3 — index pattern matching (IV-derived vs IV±k offset)
-- [x] Phase 4 — scalar reduction detection (`load → binop → store`)
-- [x] Phase 5 — conservative final verdict
-- [x] LIT test suite for Phase 2
-- [x] Dependency assumptions document (`docs/heuristics.md`)
+- [`docs/heuristics.md`](docs/heuristics.md) — every phase's assumptions and known limitations
+- [`docs/setup.md`](docs/setup.md) — full build guide including macOS source build
 
 ---
 
