@@ -21,6 +21,8 @@ child count, and body op count from each `fir.do_loop`.
 
 ## Phase 2 — Memory Access Classification
 
+
+
 **What it does:** Walks every `fir.load`, `fir.store`, `fir.array_load`, and
 `fir.array_merge_store` in the loop body and records, for each unique base
 reference, whether it is read, written, or both, and whether it originates
