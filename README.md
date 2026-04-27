@@ -241,7 +241,9 @@ python3 scripts/run_tests.py --dir tests/fortran   # original 5 tests only
 
 ## Further reading
 
+- [`docs/how_classification_works.md`](docs/how_classification_works.md) — plain-English explanation of how SAFE / REDUCTION / UNSAFE is decided, with worked examples
 - [`docs/heuristics.md`](docs/heuristics.md) — every phase's assumptions and known limitations
+- [`docs/test_spec.md`](docs/test_spec.md) — full test specification, validation strategies, and fuzzing ideas
 - [`docs/setup.md`](docs/setup.md) — full build guide including macOS source build
 
 ---
