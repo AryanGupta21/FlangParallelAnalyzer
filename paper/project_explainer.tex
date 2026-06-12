@@ -1,0 +1,532 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{xcolor}
+\usepackage{mdframed}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{tikz}
+\usepackage{parskip}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fontenc}
+
+% ── Colors ────────────────────────────────────────────────────────
+\definecolor{navyblue}{HTML}{083C92}
+\definecolor{lightblue}{HTML}{EBF2FA}
+\definecolor{safegreen}{HTML}{1A6B3C}
+\definecolor{lightgreen}{HTML}{E8F5EE}
+\definecolor{unsafered}{HTML}{8B1A1A}
+\definecolor{lightred}{HTML}{FDECEA}
+\definecolor{reducegold}{HTML}{B8860B}
+\definecolor{lightgold}{HTML}{FDF6E3}
+\definecolor{codegray}{HTML}{F4F4F4}
+\definecolor{darkgray}{HTML}{444444}
+
+% ── Section styling ───────────────────────────────────────────────
+\titleformat{\section}
+  {\Large\bfseries\color{navyblue}}
+  {\thesection.}{0.5em}{}
+  [\color{navyblue}\rule{\linewidth}{1.5pt}]
+
+\titleformat{\subsection}
+  {\large\bfseries\color{darkgray}}
+  {\thesubsection.}{0.5em}{}
+
+% ── Code style ────────────────────────────────────────────────────
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codegray},
+  frame=single,
+  framerule=0pt,
+  rulecolor=\color{codegray},
+  breaklines=true,
+  captionpos=b,
+  numbers=none,
+  xleftmargin=10pt,
+  xrightmargin=10pt,
+}
+
+% ── Coloured boxes ────────────────────────────────────────────────
+\newmdenv[
+  backgroundcolor=lightgreen,
+  linecolor=safegreen,
+  linewidth=2pt,
+  leftline=true, rightline=false, topline=false, bottomline=false,
+  innerleftmargin=10pt, innerrightmargin=10pt,
+  innertopmargin=8pt, innerbottommargin=8pt,
+  skipabove=6pt, skipbelow=6pt,
+]{safebox}
+
+\newmdenv[
+  backgroundcolor=lightred,
+  linecolor=unsafered,
+  linewidth=2pt,
+  leftline=true, rightline=false, topline=false, bottomline=false,
+  innerleftmargin=10pt, innerrightmargin=10pt,
+  innertopmargin=8pt, innerbottommargin=8pt,
+  skipabove=6pt, skipbelow=6pt,
+]{unsafebox}
+
+\newmdenv[
+  backgroundcolor=lightgold,
+  linecolor=reducegold,
+  linewidth=2pt,
+  leftline=true, rightline=false, topline=false, bottomline=false,
+  innerleftmargin=10pt, innerrightmargin=10pt,
+  innertopmargin=8pt, innerbottommargin=8pt,
+  skipabove=6pt, skipbelow=6pt,
+]{reducebox}
+
+\newmdenv[
+  backgroundcolor=lightblue,
+  linecolor=navyblue,
+  linewidth=2pt,
+  leftline=true, rightline=false, topline=false, bottomline=false,
+  innerleftmargin=10pt, innerrightmargin=10pt,
+  innertopmargin=8pt, innerbottommargin=8pt,
+  skipabove=6pt, skipbelow=6pt,
+]{infobox}
+
+% ── Header / Footer ───────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{navyblue}\textbf{FlangParallelAnalyzer}}
+\fancyhead[R]{\small\color{darkgray}RV College of Engineering}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.5pt}
+\renewcommand{\headrule}{\color{navyblue}\hrule width\headwidth height\headrulewidth}
+
+% =================================================================
+\begin{document}
+
+% ── Title page ───────────────────────────────────────────────────
+\begin{titlepage}
+\centering
+\vspace*{1.5cm}
+{\color{navyblue}\rule{\linewidth}{3pt}}\\[1.2cm]
+{\Huge\bfseries\color{navyblue} FlangParallelAnalyzer}\\[0.6cm]
+{\Large\color{darkgray} A Simple Guide to the Project}\\[0.4cm]
+{\large\color{darkgray}\textit{Automatic Loop Parallelism Analysis for Fortran}}\\[1.5cm]
+{\color{navyblue}\rule{\linewidth}{1pt}}\\[1.5cm]
+
+\begin{tabular}{c}
+{\large Aryan Gupta} \\[4pt]
+{\large Arushi Vaidya} \\[4pt]
+{\large Arpita} \\[12pt]
+{\normalsize Department of Computer Science and Engineering} \\[4pt]
+{\normalsize RV College of Engineering, Bengaluru} \\
+\end{tabular}
+
+\vfill
+{\color{navyblue}\rule{\linewidth}{3pt}}\\[0.5cm]
+{\normalsize 2024--25}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% =================================================================
+\section{What is this project about?}
+
+Imagine you have a Fortran program that processes a huge array of
+numbers --- say, a weather simulation running over a million grid
+points. Inside the program, there is a loop that looks like this:
+
+\begin{lstlisting}[language=Fortran]
+do i = 1, 1000000
+    temperature(i) = temperature(i) * 1.05
+end do
+\end{lstlisting}
+
+Your computer today has 8, 16, or even 64 cores sitting idle. Instead
+of running this loop one step at a time, you could split it across all
+cores and finish it 64$\times$ faster. That is what \textbf{parallel
+computing} is --- doing many things at the same time.
+
+In Fortran, you tell the compiler to parallelize a loop by adding a
+single line:
+
+\begin{lstlisting}[language=Fortran]
+!$OMP PARALLEL DO          <- this one line splits the work
+do i = 1, 1000000
+    temperature(i) = temperature(i) * 1.05
+end do
+\end{lstlisting}
+
+\begin{infobox}
+\textbf{The problem:} Not every loop can be parallelized safely.
+If one iteration of the loop depends on a result computed by a previous
+iteration, running them at the same time gives the \textbf{wrong
+answer} --- silently, with no error message.
+
+Figuring out which loops are safe to parallelize, by hand, for a
+codebase with hundreds of loops, takes hours and is error-prone.
+\end{infobox}
+
+\textbf{FlangParallelAnalyzer (FPA)} solves this automatically. You
+give it a Fortran file, and it tells you --- for every loop ---
+whether it is safe to parallelize, needs a special clause, or is
+genuinely unsafe.
+
+% =================================================================
+\section{The Three Possible Outcomes}
+
+For every loop it finds, FPA gives one of three verdicts:
+
+\vspace{6pt}
+\begin{safebox}
+\textbf{\color{safegreen}SAFE --- Go ahead and parallelize.}\\
+Each iteration of the loop works on completely independent data.
+No two iterations ever read or write the same memory cell.\\[4pt]
+\textbf{Example:}
+\begin{lstlisting}[language=Fortran]
+do i = 1, n
+    b(i) = a(i) * 2.0     ! iteration 3 touches b(3) and a(3)
+end do                     ! iteration 7 touches b(7) and a(7)
+                           ! they never overlap -> SAFE
+\end{lstlisting}
+\textbf{Hint emitted:} \texttt{!\$OMP PARALLEL DO}
+\end{safebox}
+
+\vspace{6pt}
+\begin{reducebox}
+\textbf{\color{reducegold}REDUCTION --- Safe with a special clause.}\\
+The loop adds up (or multiplies) into a single accumulator variable.
+OpenMP can handle this pattern natively.\\[4pt]
+\textbf{Example:}
+\begin{lstlisting}[language=Fortran]
+do i = 1, n
+    total = total + a(i) * b(i)   ! "total" accumulates across iters
+end do
+\end{lstlisting}
+\textbf{Hint emitted:} \texttt{!\$OMP PARALLEL DO REDUCTION(+:total)}
+\end{reducebox}
+
+\vspace{6pt}
+\begin{unsafebox}
+\textbf{\color{unsafered}UNSAFE --- Do not parallelize.}\\
+One iteration reads a value that was written by another iteration.
+Parallelizing this would produce wrong results.\\[4pt]
+\textbf{Example:}
+\begin{lstlisting}[language=Fortran]
+do i = 2, n
+    a(i) = a(i) + a(i-1)   ! iteration 5 reads a(4), which
+end do                      ! iteration 4 is still computing -> UNSAFE
+\end{lstlisting}
+\textbf{Hint emitted:} \texttt{! Cannot parallelize}
+\end{unsafebox}
+
+% =================================================================
+\section{How Does It Work? (The Pipeline)}
+
+FPA does not guess. It reads the compiled form of the Fortran program
+(called \textbf{FIR} --- Fortran Intermediate Representation) and runs
+a five-step analysis on every loop it finds.
+
+\begin{infobox}
+\textbf{Why FIR and not the Fortran source directly?}\\
+Fortran source code has many tricky syntax rules (implicit variable
+types, fixed vs free format, etc.). FIR is a clean, structured version
+produced by the compiler where every array access, every variable, and
+every loop is spelled out explicitly. It is much easier to analyze.
+\end{infobox}
+
+\subsection{Phase 1 --- What does this loop look like?}
+
+FPA first collects basic facts about the loop:
+\begin{itemize}[leftmargin=1.5em]
+  \item What are the loop bounds? (e.g., \texttt{1} to \texttt{n})
+  \item How deep is the nesting? (is this inside another loop?)
+  \item How many operations are in the body?
+\end{itemize}
+At this point, the verdict is still \textit{unknown}.
+
+\subsection{Phase 2 --- What memory does this loop touch?}
+
+FPA walks every read (\texttt{load}) and write (\texttt{store}) inside
+the loop and builds a list of every variable it sees:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Variable} & \textbf{Read?} & \textbf{Written?} & \textbf{External?} \\
+\midrule
+\texttt{a} (array)   & Yes & No  & Yes (passed in) \\
+\texttt{b} (array)   & No  & Yes & Yes (passed in) \\
+\texttt{i} (counter) & Yes & Yes & No  (local)     \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textit{External} means the variable came from outside the loop ---
+i.e., it is a function argument or a variable declared before the loop.
+These are the ones that matter for dependency analysis.
+
+\subsection{Phase 3 --- Are array subscripts independent?}
+
+This is the core of the analysis. FPA looks at how each array is
+indexed and asks: \textbf{``Does iteration \texttt{i} touch the same
+element as iteration \texttt{j}?''}
+
+It traces every subscript back through the compiler IR to find out
+whether it is:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Exactly the loop variable \texttt{i}:} each iteration
+        touches a unique element --- independent, no conflict.
+
+  \begin{lstlisting}[language=Fortran]
+  a(i)      <- subscript = i  -> safe, each iter unique
+  \end{lstlisting}
+
+  \item \textbf{The loop variable plus or minus a constant (\texttt{i$\pm$k}):}
+        iteration \texttt{i} reads the element that iteration
+        \texttt{i-k} will write --- that is a
+        \textbf{loop-carried dependency} and the loop is immediately
+        marked \textsc{Unsafe}.
+
+  \begin{lstlisting}[language=Fortran]
+  a(i-1)    <- subscript = i-1  -> iter i reads what iter i-1 writes
+  \end{lstlisting}
+
+  \item \textbf{Something else} (e.g., an indirect index like
+        \texttt{a(idx(i))}): FPA cannot prove it is safe, so it passes
+        to Phase 4.
+\end{itemize}
+
+\subsection{Phase 4 --- Is this a reduction?}
+
+If Phase 3 left the verdict unknown (usually because a scalar variable
+is both read and written), Phase 4 checks for the \textbf{reduction
+pattern}:
+
+\begin{lstlisting}[language=Fortran]
+! The pattern FPA looks for:
+old_value  = load(accumulator)          ! step 1: read
+new_value  = old_value + something      ! step 2: arithmetic
+             store(new_value, accumulator)  ! step 3: write back
+\end{lstlisting}
+
+If this exact chain is found, the loop is marked \textsc{Reduction}
+and the correct \texttt{REDUCTION(+:var)} or \texttt{REDUCTION(*:var)}
+clause is emitted.
+
+\subsection{Phase 5 --- Final conservative decision}
+
+Any loop still undecided after Phase 4 gets a fallback verdict:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item If no external variable is written at all: the loop is
+        \textsc{Safe} (a read-only loop cannot have dependencies).
+  \item Otherwise: \textsc{Unsafe} --- FPA does not know enough to
+        guarantee correctness, so it plays it safe.
+\end{itemize}
+
+\begin{infobox}
+\textbf{Key design principle:} FPA would rather call a safe loop
+``unsafe'' (you miss a speedup) than call an unsafe loop ``safe''
+(you get wrong answers). \textbf{Zero false positives} is guaranteed.
+\end{infobox}
+
+% =================================================================
+\section{A Full Worked Example}
+
+Here is what FPA produces when run on a real Fortran file:
+
+\textbf{Input:}
+\begin{lstlisting}[language=Fortran]
+subroutine scale(a, b, n)
+    real, intent(in)  :: a(n)
+    real, intent(out) :: b(n)
+    integer :: i
+    do i = 1, n
+        b(i) = a(i) * 2.0
+    end do
+end subroutine
+\end{lstlisting}
+
+\textbf{Command:}
+\begin{lstlisting}[language=bash]
+flang-new -fc1 -emit-fir scale.f90 -o /tmp/scale.fir
+./build/tools/fpa-tool/fpa-tool /tmp/scale.fir
+\end{lstlisting}
+
+\textbf{Output:}
+\begin{lstlisting}
+[FlangParallelAnalyzer] Function: _QPscale
+------------------------------------------------------------
+  Loop #1 @ scale.fir:6
+  Bounds : [1 .. ? step 1]
+  Access : ext-reads=1  ext-writes=1  ext-readwrites=0
+           [R]  array  -- a
+           [W]  array  -- b
+  Status : SAFE
+  Hint   : !$OMP PARALLEL DO
+  Reason : Independent per-element access: each iteration reads
+           a(i) and writes b(i) with no overlap across iterations.
+------------------------------------------------------------
+\end{lstlisting}
+
+The developer can now confidently add \texttt{!\$OMP PARALLEL DO}
+above the loop and get correct parallel execution.
+
+% =================================================================
+\section{What the Tool is Made Of}
+
+\begin{center}
+\begin{tabular}{p{5cm} p{2cm} p{7cm}}
+\toprule
+\textbf{File} & \textbf{Size} & \textbf{What it does} \\
+\midrule
+\texttt{LoopParallelAnalysis.cpp} & 471 lines &
+  The main analysis engine. Runs all 5 phases on every loop. \\[4pt]
+\texttt{AccessClassifier.cpp} & 165 lines &
+  Walks through every memory read/write in a loop and records it. \\[4pt]
+\texttt{main.cpp} (fpa-tool) & 71 lines &
+  The command-line tool. Loads the file and runs the analysis. \\[4pt]
+\texttt{report.py} & 1259 lines &
+  Python script that runs the tool on all test files and generates the interactive HTML report. \\[4pt]
+\texttt{run\_tests.py} & 250 lines &
+  Automated test runner --- checks that all 35 test cases pass. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{6pt}
+\textbf{Technologies used:}
+\begin{itemize}[leftmargin=1.5em, itemsep=2pt]
+  \item \textbf{LLVM 18} --- the industry-standard compiler toolkit
+        that FPA is built on top of.
+  \item \textbf{MLIR} --- the part of LLVM that lets us write our own
+        analysis pass and walk through code systematically.
+  \item \textbf{Flang} --- the LLVM Fortran compiler that converts
+        \texttt{.f90} source to FIR (the format FPA reads).
+  \item \textbf{C++ 17} --- the language the analysis logic is written
+        in.
+  \item \textbf{Python 3} --- used for the test runner and HTML report
+        generator.
+\end{itemize}
+
+% =================================================================
+\section{Test Results}
+
+FPA was tested on a suite of 35 handcrafted Fortran programs covering
+every major loop pattern. Every single test gets the correct verdict.
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Category} & \textbf{Test cases} & \textbf{Correct} \\
+\midrule
+Embarrassingly parallel (SAFE)   & 13 & 13 \\
+Scalar reductions (REDUCTION)    &  5 &  5 \\
+Loop-carried dependencies (UNSAFE) & 10 & 10 \\
+Complex / indirect patterns (UNSAFE conservatively) &  7 &  7 \\
+\midrule
+\textbf{Total} & \textbf{35} & \textbf{35 (100\%)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{safebox}
+\textbf{Zero false positives.} FPA never tells you a loop is safe when
+it is not. The worst it can do is miss a parallelization opportunity ---
+it never gives wrong answers.
+\end{safebox}
+
+% =================================================================
+\section{The HTML Report}
+
+Running \texttt{python3 scripts/report.py} generates a browser-based
+report with three panels:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{File Browser} --- lists all Fortran files with a
+        colour-coded badge (\textcolor{safegreen}{SAFE} /
+        \textcolor{reducegold}{REDUCTION} /
+        \textcolor{unsafered}{UNSAFE}) for each loop.
+  \item \textbf{Source View} --- shows the Fortran source with an
+        inline chip on the \texttt{do} line indicating the verdict
+        and a confidence score (e.g.\ HIGH 90\%).
+  \item \textbf{Analysis Detail} --- shows exactly which of the 5
+        phases fired, what memory accesses were found, and the full
+        reason for the verdict.
+\end{enumerate}
+
+This lets a developer immediately see what was decided and \textit{why},
+without reading any compiler IR.
+
+% =================================================================
+\section{Known Limitations}
+
+FPA is a research prototype. A few patterns are not yet handled:
+
+\begin{itemize}[leftmargin=1.5em, itemsep=4pt]
+  \item \textbf{In-place same-index updates:} \texttt{a(i) = a(i) * 3}
+        is actually safe (each iteration touches its own element) but
+        FPA conservatively marks it \textsc{Unsafe} because it cannot
+        confirm the read happens before the write without extra
+        analysis.
+
+  \item \textbf{Multi-dimensional arrays:} \texttt{c(i,j)} subscripts
+        are not yet traced, so nested loops over 2D arrays get
+        \textsc{Unsafe}.
+
+  \item \textbf{Function calls:} if the loop body calls an external
+        function, FPA does not know if that function has side effects,
+        so it cannot guarantee safety.
+
+  \item \textbf{Min/Max reductions:} only \texttt{+} and \texttt{*}
+        reductions are detected. \texttt{MIN}/\texttt{MAX}
+        accumulations are not yet supported.
+\end{itemize}
+
+% =================================================================
+\section{What's Next}
+
+\begin{itemize}[leftmargin=1.5em, itemsep=4pt]
+  \item Fix the in-place update false negative with a read-before-write
+        check on the value chain.
+  \item Add support for \texttt{MIN}/\texttt{MAX} reductions.
+  \item Trace multi-dimensional subscripts axis by axis.
+  \item Analyze function side-effects interprocedurally.
+  \item Automatically insert \texttt{!\$OMP} directives into the
+        Fortran source (currently the tool only suggests them).
+\end{itemize}
+
+% =================================================================
+\section{Summary}
+
+\begin{infobox}
+\textbf{In one paragraph:}
+
+FlangParallelAnalyzer is a static analysis tool that reads compiled
+Fortran programs and automatically determines, for every \texttt{DO}
+loop, whether it is safe to run in parallel. It works by analyzing the
+Fortran Intermediate Representation (FIR) produced by the LLVM Flang
+compiler, running a five-phase pipeline that checks array subscript
+patterns, detects scalar reductions, and applies a conservative
+fallback. It produces a verdict (\textsc{Safe}, \textsc{Reduction}, or
+\textsc{Unsafe}) along with an OpenMP directive hint and a full
+explanation. On a 35-case test suite it achieves 100\% accuracy with
+zero false positives --- it never tells you a loop is safe when it is
+not.
+\end{infobox}
+
+\vfill
+\begin{center}
+{\color{navyblue}\rule{0.5\linewidth}{1pt}}\\[6pt]
+{\small\color{darkgray}
+Aryan Gupta \quad Arushi Vaidya \quad Arpita\\
+Department of Computer Science and Engineering\\
+RV College of Engineering, Bengaluru\\[4pt]
+\url{https://github.com/AryanGupta21/FlangParallelAnalyzer}
+}
+\end{center}
+
+\end{document}
